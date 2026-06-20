@@ -35,7 +35,7 @@ router.get('/', (req, res) => {
 // 2. GET /gold (Get GoldCAD value and default exchange rate)
 router.get('/gold', (req, res) => {
     try {
-        const goldValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'GoldCAD'").get();
+        const goldValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'GoldCAD' OR name = 'Gold'").get();
         const goldCAD = goldValRecord ? parseFloat(goldValRecord.value1) || 0 : 0;
         return sendSuccess(res, {
             goldCAD,
@@ -49,10 +49,23 @@ router.get('/gold', (req, res) => {
 // 3. GET /plat (Get PlatCAD value)
 router.get('/plat', (req, res) => {
     try {
-        const platValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'PlatCAD'").get();
+        const platValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'PlatCAD' OR name = 'Platinum'").get();
         const platCAD = platValRecord ? parseFloat(platValRecord.value1) || 0 : 0;
         return sendSuccess(res, {
             platCAD
+        });
+    } catch (err) {
+        return sendError(res, err.message);
+    }
+});
+
+// 3.5. GET /silver (Get SilverCAD value)
+router.get('/silver', (req, res) => {
+    try {
+        const silverValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'SilverCAD' OR name = 'Silver'").get();
+        const silverCAD = silverValRecord ? parseFloat(silverValRecord.value1) || 0 : 0;
+        return sendSuccess(res, {
+            silverCAD
         });
     } catch (err) {
         return sendError(res, err.message);
@@ -162,6 +175,93 @@ router.delete('/:id', (req, res) => {
 
         db.prepare('DELETE FROM "values" WHERE id = ?').run(id);
         return sendSuccess(res, { id: parseInt(id) });
+    } catch (err) {
+        return sendError(res, err.message);
+    }
+});
+
+// Helper to fetch price for a given metal from goldbroker
+async function fetchPriceFromGoldbroker(metalSymbol) {
+    const url = `https://goldbroker.com/api/spot-prices?metal=${metalSymbol}&currency=CAD&weight_unit=g`;
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP error fetching ${metalSymbol}! Status: ${response.status}`);
+    }
+    const data = await response.json();
+    const items = data._embedded && data._embedded.items;
+    if (items && items.length > 0) {
+        const latest = items[items.length - 1];
+        if (latest && (latest.value || latest.mid)) {
+            return latest.value || latest.mid;
+        }
+    }
+    if (data.last_historical_spot_price && data.last_historical_spot_price.close) {
+        return data.last_historical_spot_price.close;
+    }
+    throw new Error(`Unable to extract price for ${metalSymbol} from response`);
+}
+
+// 8. POST /sync (Fetch and update metal prices)
+router.post('/sync', async (req, res) => {
+    try {
+        const timestamp = getTimestamp();
+
+        // 1. Fetch prices in parallel
+        const [goldPrice, silverPrice, platPrice] = await Promise.all([
+            fetchPriceFromGoldbroker('XAU'),
+            fetchPriceFromGoldbroker('XAG'),
+            fetchPriceFromGoldbroker('XPT')
+        ]);
+
+        // Helper function to upsert a metal price record
+        const upsertPrice = (name, oldNames, price) => {
+            const queryNames = [name, ...oldNames];
+            const placeholders = queryNames.map(() => '?').join(',');
+            
+            // Check if record exists
+            const existing = db.prepare(`
+                SELECT id, name FROM "values" 
+                WHERE type_id = 2 AND name IN (${placeholders})
+            `).get(...queryNames);
+
+            if (existing) {
+                // Update existing record, setting name to the clean name if it was old
+                db.prepare(`
+                    UPDATE "values" 
+                    SET name = ?, value1 = ?, updated_at = ? 
+                    WHERE id = ?
+                `).run(name, price.toString(), timestamp, existing.id);
+            } else {
+                // Find max order to place it nicely
+                const maxOrderRec = db.prepare(`SELECT MAX(CAST("order" AS INTEGER)) as maxOrder FROM "values"`).get();
+                const nextOrder = (maxOrderRec && maxOrderRec.maxOrder ? parseInt(maxOrderRec.maxOrder) : 0) + 1;
+
+                db.prepare(`
+                    INSERT INTO "values" (type_id, name, value1, "order", active, created_at, updated_at)
+                    VALUES (2, ?, ?, ?, 1, ?, ?)
+                `).run(name, price.toString(), nextOrder.toString(), timestamp, timestamp);
+            }
+        };
+
+        // 2. Perform updates inside a transaction
+        const syncTransaction = db.transaction(() => {
+            upsertPrice('GoldCAD', ['Gold'], goldPrice);
+            upsertPrice('SilverCAD', ['Silver'], silverPrice);
+            upsertPrice('PlatCAD', ['Platinum'], platPrice);
+        });
+        
+        syncTransaction();
+
+        return sendSuccess(res, {
+            GoldCAD: goldPrice,
+            SilverCAD: silverPrice,
+            PlatCAD: platPrice,
+            timestamp
+        });
     } catch (err) {
         return sendError(res, err.message);
     }

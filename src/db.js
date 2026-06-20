@@ -85,6 +85,7 @@ function initSchema() {
             note TEXT,
             used INTEGER NOT NULL DEFAULT 0,
             credit_type TEXT NOT NULL DEFAULT 'credit',
+            credit_value REAL NOT NULL DEFAULT 0,
             created_at DATETIME,
             updated_at DATETIME,
             FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
@@ -211,7 +212,8 @@ function seedInitialData() {
             { type_id: 1, name: 'Platinum', value1: '0.95', value2: '0.4', value3: 'Platinum', value4: null, order: '11', active: 1 },
             { type_id: 1, name: 'Other', value1: '5', value2: '1', value3: 'Other', value4: null, order: '12', active: 1 },
             { type_id: 2, name: 'GoldCAD', value1: '0', value2: null, value3: null, value4: null, order: '13', active: 1 },
-            { type_id: 2, name: 'PlatCAD', value1: '0', value2: null, value3: null, value4: null, order: '14', active: 1 }
+            { type_id: 2, name: 'PlatCAD', value1: '0', value2: null, value3: null, value4: null, order: '14', active: 1 },
+            { type_id: 2, name: 'SilverCAD', value1: '0', value2: null, value3: null, value4: null, order: '15', active: 1 }
         ];
         const transaction = db.transaction((list) => {
             for (const val of list) {
@@ -223,6 +225,15 @@ function seedInitialData() {
 }
 
 initSchema();
+
+// Migration: Ensure credit_value column exists in goldcredits table
+try {
+    db.prepare('ALTER TABLE goldcredits ADD COLUMN credit_value REAL NOT NULL DEFAULT 0').run();
+    console.log('[Migration] Added credit_value column to goldcredits');
+} catch (err) {
+    // Column already exists or table doesn't exist yet
+}
+
 seedInitialData();
 
 module.exports = {

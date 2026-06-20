@@ -43,7 +43,7 @@ router.get('/', (req, res) => {
             const total = totalRecord ? totalRecord.count : 0;
             const lastPage = Math.ceil(total / parsedLimit) || 1;
 
-            const allowedColumns = ['id', 'customer_id', 'employee_id', 'gold_cad', 'plat_cad', 'gold_date', 'used', 'credit_type', 'created_at', 'updated_at'];
+            const allowedColumns = ['id', 'customer_id', 'employee_id', 'gold_cad', 'plat_cad', 'gold_date', 'used', 'credit_type', 'credit_value', 'created_at', 'updated_at'];
             const validatedSortCol = allowedColumns.includes(sortColumn) ? sortColumn : 'created_at';
 
             const credits = db.prepare(`
@@ -98,7 +98,7 @@ router.get('/:id', (req, res) => {
 // 3. POST / (Create a credit record)
 router.post('/', (req, res) => {
     try {
-        const { customer_id, employee_id, goldCAD, platCAD, metalPriceDate, note, used, credit_type, credit_items, credit_images } = req.body;
+        const { customer_id, employee_id, goldCAD, platCAD, metalPriceDate, note, used, credit_type, credit_value, credit_items, credit_images } = req.body;
         const timestamp = getTimestamp();
 
         if (!customer_id || parseInt(customer_id) === 0) {
@@ -106,8 +106,8 @@ router.post('/', (req, res) => {
         }
 
         const insertCredit = db.prepare(`
-            INSERT INTO goldcredits (customer_id, employee_id, gold_cad, plat_cad, gold_date, note, used, credit_type, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO goldcredits (customer_id, employee_id, gold_cad, plat_cad, gold_date, note, used, credit_type, credit_value, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = insertCredit.run(
@@ -119,6 +119,7 @@ router.post('/', (req, res) => {
             note || null,
             used ? 1 : 0,
             credit_type || 'credit',
+            credit_value !== undefined ? parseFloat(credit_value) : 0,
             timestamp,
             timestamp
         );
@@ -176,7 +177,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
     try {
         const { id } = req.params;
-        const { customer_id, note, used, credit_type } = req.body;
+        const { customer_id, note, used, credit_type, credit_value } = req.body;
         const timestamp = getTimestamp();
 
         // Check if credit exists
@@ -191,7 +192,7 @@ router.put('/:id', (req, res) => {
 
         const update = db.prepare(`
             UPDATE goldcredits
-            SET customer_id = ?, note = ?, used = ?, credit_type = ?, updated_at = ?
+            SET customer_id = ?, note = ?, used = ?, credit_type = ?, credit_value = ?, updated_at = ?
             WHERE id = ?
         `);
         update.run(
@@ -199,6 +200,7 @@ router.put('/:id', (req, res) => {
             note || null,
             used ? 1 : 0,
             credit_type || 'credit',
+            credit_value !== undefined ? parseFloat(credit_value) : 0,
             timestamp,
             id
         );
@@ -237,6 +239,24 @@ router.delete('/:id', (req, res) => {
 
         transaction();
         return sendSuccess(res, { id: parseInt(id) });
+    } catch (err) {
+        return sendError(res, err.message);
+    }
+});
+
+// 6. DELETE /images/:id (Delete specific credit image by ID)
+router.delete('/images/:id', (req, res) => {
+    try {
+        const { id } = req.params;
+        const image = db.prepare('SELECT * FROM credit_images WHERE id = ?').get(id);
+        
+        if (image) {
+            deleteImageFile(image.image);
+            db.prepare('DELETE FROM credit_images WHERE id = ?').run(id);
+            return sendSuccess(res, { id: parseInt(id), image: image.image });
+        } else {
+            return sendError(res, 'Image not found', 404);
+        }
     } catch (err) {
         return sendError(res, err.message);
     }

@@ -7,10 +7,35 @@ const { sendSuccess, sendError } = require('../utils/response');
 // 1. GET /customers (List, Recent, or Search)
 router.get('/', (req, res) => {
     try {
-        const { type } = req.query;
+        const { type, q } = req.query;
         let customers;
 
-        if (type === 'recent') {
+        if (q) {
+            const tokens = q.trim().split(/\s+/).filter(Boolean);
+            if (tokens.length > 0) {
+                let sql = 'SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, note FROM customers WHERE ';
+                const conditions = [];
+                const params = [];
+                
+                for (const token of tokens) {
+                    // 1. Substring matches
+                    conditions.push('(fname LIKE ? OR lname LIKE ? OR phone LIKE ?)');
+                    params.push(`%${token}%`, `%${token}%`, `%${token}%`);
+                    
+                    // 2. Prefix matches for spelling mistake fallback (if token length >= 2)
+                    if (token.length >= 2) {
+                        const prefix = token.slice(0, 2);
+                        conditions.push('(fname LIKE ? OR lname LIKE ?)');
+                        params.push(`${prefix}%`, `${prefix}%`);
+                    }
+                }
+                
+                sql += conditions.join(' OR ') + ' ORDER BY lname ASC, fname ASC LIMIT 100';
+                customers = db.prepare(sql).all(...params);
+            } else {
+                customers = [];
+            }
+        } else if (type === 'recent') {
             customers = db.prepare('SELECT * FROM customers ORDER BY updated_at DESC LIMIT 10').all();
         } else if (type === 'search') {
             customers = db.prepare('SELECT id, fname, lname, phone FROM customers').all();
