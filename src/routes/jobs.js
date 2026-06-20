@@ -5,38 +5,81 @@ const { deleteImageFile, saveBase64Image } = require('../utils/image');
 const { sendSuccess, sendPaginated, sendError } = require('../utils/response');
 
 // Helper to get job details loaded (nested customer, employee, images)
-function getJobWithDetails(jobId) {
-    const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+async function getJobWithDetails(jobId) {
+    const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
     if (job) {
-        job.job_images = db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(jobId);
-        job.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
-        job.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
+        job.job_images = await db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(jobId);
+        job.customer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
+        job.employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
     }
     return job || null;
 }
 
 // 1. GET /jobs (List all, recent, customer-specific, or paginated)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const { recent, customer_id, page, limit, sortBy, descending } = req.query;
 
         // A. Recent jobs list
         if (recent === 'true') {
-            const jobs = db.prepare('SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 13').all();
-            for (const job of jobs) {
-                job.job_images = db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(job.id);
-                job.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
-                job.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
-            }
+            const rows = await db.prepare(`
+                SELECT j.*, 
+                       c.fname AS customer_fname, c.lname AS customer_lname, c.phone AS customer_phone, c.email AS customer_email,
+                       e.name AS employee_name, e.active AS employee_active
+                FROM jobs j
+                LEFT JOIN customers c ON j.customer_id = c.id
+                LEFT JOIN employees e ON j.employee_id = e.id
+                ORDER BY j.updated_at DESC
+                LIMIT 13
+            `).all();
+
+            const jobs = rows.map(row => ({
+                ...row,
+                job_images: [],
+                customer: row.customer_id ? {
+                    id: row.customer_id,
+                    fname: row.customer_fname,
+                    lname: row.customer_lname,
+                    phone: row.customer_phone,
+                    email: row.customer_email
+                } : null,
+                employee: row.employee_id ? {
+                    id: row.employee_id,
+                    name: row.employee_name,
+                    active: row.employee_active
+                } : null
+            }));
             return sendSuccess(res, jobs);
         }
 
         // B. Customer specific jobs
         if (customer_id) {
-            const jobs = db.prepare('SELECT * FROM jobs WHERE customer_id = ?').all(customer_id);
-            for (const job of jobs) {
-                job.job_images = db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(job.id);
-            }
+            const rows = await db.prepare(`
+                SELECT j.*, 
+                       c.fname AS customer_fname, c.lname AS customer_lname, c.phone AS customer_phone, c.email AS customer_email,
+                       e.name AS employee_name, e.active AS employee_active
+                FROM jobs j
+                LEFT JOIN customers c ON j.customer_id = c.id
+                LEFT JOIN employees e ON j.employee_id = e.id
+                WHERE j.customer_id = ?
+            `).all(customer_id);
+
+            const jobs = rows.map(row => ({
+                ...row,
+                job_images: [],
+                customer: row.customer_id ? {
+                    id: row.customer_id,
+                    fname: row.customer_fname,
+                    lname: row.customer_lname,
+                    phone: row.customer_phone,
+                    email: row.customer_email
+                } : null,
+                employee: row.employee_id ? {
+                    id: row.employee_id,
+                    name: row.employee_name,
+                    active: row.employee_active
+                } : null
+            }));
             return sendSuccess(res, jobs);
         }
 
@@ -48,24 +91,40 @@ router.get('/', (req, res) => {
             const currentPage = parseInt(page) || 1;
             const offset = (currentPage - 1) * parsedLimit;
 
-            const totalRecord = db.prepare('SELECT COUNT(*) as count FROM jobs').get();
+            const totalRecord = await db.prepare('SELECT COUNT(*) as count FROM jobs').get();
             const total = totalRecord ? totalRecord.count : 0;
             const lastPage = Math.ceil(total / parsedLimit) || 1;
 
             const allowedColumns = ['id', 'customer_id', 'employee_id', 'estimate', 'due_date', 'completed_at', 'created_at', 'updated_at'];
             const validatedSortCol = allowedColumns.includes(sortColumn) ? sortColumn : 'created_at';
 
-            const jobs = db.prepare(`
-                SELECT * FROM jobs
-                ORDER BY ${validatedSortCol} ${sortDirection}
+            const rows = await db.prepare(`
+                SELECT j.*, 
+                       c.fname AS customer_fname, c.lname AS customer_lname, c.phone AS customer_phone, c.email AS customer_email,
+                       e.name AS employee_name, e.active AS employee_active
+                FROM jobs j
+                LEFT JOIN customers c ON j.customer_id = c.id
+                LEFT JOIN employees e ON j.employee_id = e.id
+                ORDER BY j.${validatedSortCol} ${sortDirection}
                 LIMIT ? OFFSET ?
             `).all(parsedLimit, offset);
 
-            for (const job of jobs) {
-                job.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
-                job.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
-                job.job_images = db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(job.id);
-            }
+            const jobs = rows.map(row => ({
+                ...row,
+                job_images: [],
+                customer: row.customer_id ? {
+                    id: row.customer_id,
+                    fname: row.customer_fname,
+                    lname: row.customer_lname,
+                    phone: row.customer_phone,
+                    email: row.customer_email
+                } : null,
+                employee: row.employee_id ? {
+                    id: row.employee_id,
+                    name: row.employee_name,
+                    active: row.employee_active
+                } : null
+            }));
 
             return sendPaginated(res, jobs, {
                 currentPage,
@@ -76,12 +135,31 @@ router.get('/', (req, res) => {
         }
 
         // D. Simple non-paginated listing of all jobs
-        const jobs = db.prepare('SELECT * FROM jobs').all();
-        for (const job of jobs) {
-            job.job_images = db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(job.id);
-            job.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
-            job.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
-        }
+        const rows = await db.prepare(`
+            SELECT j.*, 
+                   c.fname AS customer_fname, c.lname AS customer_lname, c.phone AS customer_phone, c.email AS customer_email,
+                   e.name AS employee_name, e.active AS employee_active
+            FROM jobs j
+            LEFT JOIN customers c ON j.customer_id = c.id
+            LEFT JOIN employees e ON j.employee_id = e.id
+        `).all();
+
+        const jobs = rows.map(row => ({
+            ...row,
+            job_images: [],
+            customer: row.customer_id ? {
+                id: row.customer_id,
+                fname: row.customer_fname,
+                lname: row.customer_lname,
+                phone: row.customer_phone,
+                email: row.customer_email
+            } : null,
+            employee: row.employee_id ? {
+                id: row.employee_id,
+                name: row.employee_name,
+                active: row.employee_active
+            } : null
+        }));
         return sendSuccess(res, jobs);
     } catch (err) {
         return sendError(res, err.message);
@@ -89,7 +167,7 @@ router.get('/', (req, res) => {
 });
 
 // 2. GET /jobs/stats (Monthly aggregate totals)
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
     try {
         const stats = {
             monthTotals: [],
@@ -105,10 +183,14 @@ router.get('/stats', (req, res) => {
             const targetYear = targetDate.getFullYear();
             const targetMonthStr = String(targetDate.getMonth() + 1).padStart(2, '0');
 
-            const monthTotalRecord = db.prepare(`
+            const dateClause = db.isMySQL 
+                ? "DATE_FORMAT(created_at, '%Y-%m') = ?"
+                : "strftime('%Y-%m', created_at) = ?";
+
+            const monthTotalRecord = await db.prepare(`
                 SELECT SUM(estimate) as total, COUNT(*) as count
                 FROM jobs
-                WHERE strftime('%Y-%m', created_at) = ?
+                WHERE ${dateClause}
             `).get(`${targetYear}-${targetMonthStr}`);
 
             const total = monthTotalRecord && monthTotalRecord.total ? parseFloat(monthTotalRecord.total) : 0;
@@ -130,10 +212,10 @@ router.get('/stats', (req, res) => {
 });
 
 // 3. GET /jobs/:id (Show single job details)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const job = getJobWithDetails(id);
+        const job = await getJobWithDetails(id);
         if (!job) {
             return sendError(res, 'Job not found', 404);
         }
@@ -144,7 +226,7 @@ router.get('/:id', (req, res) => {
 });
 
 // 4. POST /jobs (Create a job)
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     try {
         const { customer_id, employee_id, estimate, deposit, est_note, note, appraisal, vital_date, due_date, completed_at, job_images } = req.body;
         const timestamp = getTimestamp();
@@ -163,7 +245,7 @@ router.post('/', (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        const result = insertJob.run(
+        const result = await insertJob.run(
             customer_id,
             employee_id || 1,
             parsedEstimate,
@@ -182,7 +264,7 @@ router.post('/', (req, res) => {
 
         // Save uploaded job images
         if (Array.isArray(job_images) && job_images.length > 0) {
-            const maxImageRecord = db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
@@ -193,13 +275,13 @@ router.post('/', (req, res) => {
             for (const img of job_images) {
                 if (img.image) {
                     const savedPath = saveBase64Image(img.image, 'job', jobId, nextImageId);
-                    insertImage.run(jobId, img.note || null, savedPath, timestamp, timestamp);
+                    await insertImage.run(jobId, img.note || null, savedPath, timestamp, timestamp);
                     nextImageId++;
                 }
             }
         }
 
-        const newJob = getJobWithDetails(jobId);
+        const newJob = await getJobWithDetails(jobId);
         return sendSuccess(res, newJob, 201);
     } catch (err) {
         return sendError(res, err.message);
@@ -207,14 +289,14 @@ router.post('/', (req, res) => {
 });
 
 // 5. PUT /jobs/:id (Update a job)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { customer_id, employee_id, estimate, deposit, est_note, note, appraisal, vital_date, due_date, completed_at, job_images } = req.body;
         const timestamp = getTimestamp();
 
         // Check if job exists
-        const existingJob = db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
+        const existingJob = await db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
         if (!existingJob) {
             return sendError(res, 'Job not found', 404);
         }
@@ -234,7 +316,7 @@ router.put('/:id', (req, res) => {
             SET customer_id = ?, employee_id = ?, estimate = ?, deposit = ?, est_note = ?, note = ?, appraisal = ?, vital_date = ?, due_date = ?, completed_at = ?, updated_at = ?
             WHERE id = ?
         `);
-        updateJob.run(
+        await updateJob.run(
             customer_id,
             employee_id || 1,
             parsedEstimate,
@@ -251,7 +333,7 @@ router.put('/:id', (req, res) => {
 
         // Save/Update images
         if (Array.isArray(job_images) && job_images.length > 0) {
-            const maxImageRecord = db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
@@ -268,17 +350,17 @@ router.put('/:id', (req, res) => {
             for (const img of job_images) {
                 if (img.id) {
                     // Update note for existing image
-                    updateImageNote.run(img.note || '', timestamp, img.id);
+                    await updateImageNote.run(img.note || '', timestamp, img.id);
                 } else if (img.image) {
                     // Save new Base64 image
                     const savedPath = saveBase64Image(img.image, 'job', id, nextImageId);
-                    insertImage.run(id, img.note || null, savedPath, timestamp, timestamp);
+                    await insertImage.run(id, img.note || null, savedPath, timestamp, timestamp);
                     nextImageId++;
                 }
             }
         }
 
-        const updatedJob = getJobWithDetails(id);
+        const updatedJob = await getJobWithDetails(id);
         return sendSuccess(res, updatedJob);
     } catch (err) {
         return sendError(res, err.message);
@@ -286,29 +368,29 @@ router.put('/:id', (req, res) => {
 });
 
 // 6. DELETE /jobs/:id (Delete job and clean related files)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
+        const job = await db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
         if (!job) {
             return sendError(res, 'Job not found', 404);
         }
 
         // Fetch and delete associated job image files
-        const images = db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(id);
+        const images = await db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(id);
         for (const img of images) {
             deleteImageFile(img.image);
         }
 
-        const transaction = db.transaction(() => {
+        const transaction = db.transaction(async () => {
             // Delete job images from database
-            db.prepare('DELETE FROM job_images WHERE job_id = ?').run(id);
+            await db.prepare('DELETE FROM job_images WHERE job_id = ?').run(id);
             // Delete job from database
-            db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
         });
 
-        transaction();
+        await transaction();
         return sendSuccess(res, { id: parseInt(id) });
     } catch (err) {
         return sendError(res, err.message);
@@ -316,11 +398,11 @@ router.delete('/:id', (req, res) => {
 });
 
 // 7. POST /jobs/:id/complete (Complete a job)
-router.post('/:id/complete', (req, res) => {
+router.post('/:id/complete', async (req, res) => {
     try {
         const { id } = req.params;
         
-        const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
+        const job = await db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
         if (!job) {
             return sendError(res, 'Job not found', 404);
         }
@@ -328,9 +410,9 @@ router.post('/:id/complete', (req, res) => {
         const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
         const timestamp = getTimestamp();
 
-        db.prepare('UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?').run(dateStr, timestamp, id);
+        await db.prepare('UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?').run(dateStr, timestamp, id);
         
-        const updatedJob = getJobWithDetails(id);
+        const updatedJob = await getJobWithDetails(id);
         return sendSuccess(res, updatedJob);
     } catch (err) {
         return sendError(res, err.message);
@@ -338,20 +420,20 @@ router.post('/:id/complete', (req, res) => {
 });
 
 // 8. POST /jobs/:id/uncomplete (Uncomplete a job)
-router.post('/:id/uncomplete', (req, res) => {
+router.post('/:id/uncomplete', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
+        const job = await db.prepare('SELECT id FROM jobs WHERE id = ?').get(id);
         if (!job) {
             return sendError(res, 'Job not found', 404);
         }
 
         const timestamp = getTimestamp();
 
-        db.prepare('UPDATE jobs SET completed_at = NULL, updated_at = ? WHERE id = ?').run(timestamp, id);
+        await db.prepare('UPDATE jobs SET completed_at = NULL, updated_at = ? WHERE id = ?').run(timestamp, id);
         
-        const updatedJob = getJobWithDetails(id);
+        const updatedJob = await getJobWithDetails(id);
         return sendSuccess(res, updatedJob);
     } catch (err) {
         return sendError(res, err.message);
@@ -359,14 +441,14 @@ router.post('/:id/uncomplete', (req, res) => {
 });
 
 // 9. DELETE /jobs/images/:id (Delete specific job image by ID)
-router.delete('/images/:id', (req, res) => {
+router.delete('/images/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const image = db.prepare('SELECT * FROM job_images WHERE id = ?').get(id);
+        const image = await db.prepare('SELECT * FROM job_images WHERE id = ?').get(id);
         
         if (image) {
             deleteImageFile(image.image);
-            db.prepare('DELETE FROM job_images WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM job_images WHERE id = ?').run(id);
             return sendSuccess(res, { id: parseInt(id), image: image.image });
         } else {
             return sendError(res, 'Image not found', 404);

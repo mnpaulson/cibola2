@@ -1,35 +1,85 @@
 const express = require('express');
 const router = express.Router();
 const { db, getTimestamp } = require('../db');
+const { deleteImageFile, saveBase64Image } = require('../utils/image');
 const { sendSuccess, sendPaginated, sendError } = require('../utils/response');
 
 // Helper to get custom sheet with nested estimates and values loaded
-function getCustomSheetWithDetails(sheetId) {
-    const sheet = db.prepare('SELECT * FROM custom_sheets WHERE id = ?').get(sheetId);
+async function getCustomSheetWithDetails(sheetId) {
+    const sheet = await db.prepare('SELECT * FROM custom_sheets WHERE id = ?').get(sheetId);
     if (!sheet) return null;
 
-    const estimates = db.prepare('SELECT * FROM estimates WHERE custom_sheet_id = ?').all(sheetId);
+    const estimates = await db.prepare('SELECT * FROM estimates WHERE custom_sheet_id = ?').all(sheetId);
     for (const est of estimates) {
-        est.estValues = db.prepare('SELECT * FROM est_values WHERE estimate_id = ?').all(est.id);
+        const estValues = await db.prepare('SELECT * FROM est_values WHERE estimate_id = ?').all(est.id);
+        est.estValues = estValues.map(val => {
+            const m = parseFloat(val.markup);
+            const markup = isNaN(m) || m <= 0 ? 1 : m;
+            return {
+                ...val,
+                pricePer: (parseFloat(val.basePrice) || 0) * (parseFloat(val.priceModifier) || 0) * markup - (parseFloat(val.discount) || 0)
+            };
+        });
     }
     sheet.estimates = estimates;
+    sheet.custom_images = await db.prepare('SELECT * FROM custom_images WHERE custom_sheet_id = ?').all(sheetId);
     return sheet;
 }
 
 // 1. GET / (List all, customer-specific, or paginated)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const { customer_id, page, limit, sortBy, descending } = req.query;
 
         // A. Customer specific custom sheets
         if (customer_id) {
-            const sheets = db.prepare('SELECT * FROM custom_sheets WHERE customer_id = ?').all(customer_id);
-            for (const sheet of sheets) {
-                const estimates = db.prepare('SELECT * FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
-                for (const est of estimates) {
-                    est.estValues = db.prepare('SELECT * FROM est_values WHERE estimate_id = ?').all(est.id);
+            const sheets = await db.prepare(`
+                SELECT s.*, c.fname AS customer_fname, c.lname AS customer_lname
+                FROM custom_sheets s
+                LEFT JOIN customers c ON s.customer_id = c.id
+                WHERE s.customer_id = ?
+            `).all(customer_id);
+
+            const sheetIds = sheets.map(s => s.id);
+            let estimates = [];
+            let estValues = [];
+            if (sheetIds.length > 0) {
+                const sheetPlaceholders = sheetIds.map(() => '?').join(',');
+                estimates = await db.prepare(`SELECT * FROM estimates WHERE custom_sheet_id IN (${sheetPlaceholders})`).all(...sheetIds);
+                
+                const estimateIds = estimates.map(e => e.id);
+                if (estimateIds.length > 0) {
+                    const estPlaceholders = estimateIds.map(() => '?').join(',');
+                    estValues = await db.prepare(`SELECT * FROM est_values WHERE estimate_id IN (${estPlaceholders})`).all(...estimateIds);
                 }
-                sheet.estimates = estimates;
+            }
+
+            const estValuesMap = new Map();
+            for (const val of estValues) {
+                const m = parseFloat(val.markup);
+                const markup = isNaN(m) || m <= 0 ? 1 : m;
+                const pricePer = (parseFloat(val.basePrice) || 0) * (parseFloat(val.priceModifier) || 0) * markup - (parseFloat(val.discount) || 0);
+
+                const mappedVal = { ...val, pricePer };
+                if (!estValuesMap.has(val.estimate_id)) estValuesMap.set(val.estimate_id, []);
+                estValuesMap.get(val.estimate_id).push(mappedVal);
+            }
+
+            const estimatesMap = new Map();
+            for (const est of estimates) {
+                est.estValues = estValuesMap.get(est.id) || [];
+                if (!estimatesMap.has(est.custom_sheet_id)) estimatesMap.set(est.custom_sheet_id, []);
+                estimatesMap.get(est.custom_sheet_id).push(est);
+            }
+
+            for (const sheet of sheets) {
+                sheet.customer = sheet.customer_id ? {
+                    id: sheet.customer_id,
+                    fname: sheet.customer_fname,
+                    lname: sheet.customer_lname
+                } : null;
+                sheet.estimates = estimatesMap.get(sheet.id) || [];
+                sheet.custom_images = [];
             }
             return sendSuccess(res, sheets);
         }
@@ -42,26 +92,61 @@ router.get('/', (req, res) => {
             const currentPage = parseInt(page) || 1;
             const offset = (currentPage - 1) * parsedLimit;
 
-            const totalRecord = db.prepare('SELECT COUNT(*) as count FROM custom_sheets').get();
+            const totalRecord = await db.prepare('SELECT COUNT(*) as count FROM custom_sheets').get();
             const total = totalRecord ? totalRecord.count : 0;
             const lastPage = Math.ceil(total / parsedLimit) || 1;
 
             const allowedColumns = ['id', 'customer_id', 'name', 'created_at', 'updated_at'];
             const validatedSortCol = allowedColumns.includes(sortColumn) ? sortColumn : 'created_at';
 
-            const sheets = db.prepare(`
-                SELECT * FROM custom_sheets
-                ORDER BY ${validatedSortCol} ${sortDirection}
+            const sheets = await db.prepare(`
+                SELECT s.*, c.fname AS customer_fname, c.lname AS customer_lname
+                FROM custom_sheets s
+                LEFT JOIN customers c ON s.customer_id = c.id
+                ORDER BY s.${validatedSortCol} ${sortDirection}
                 LIMIT ? OFFSET ?
             `).all(parsedLimit, offset);
 
-            for (const sheet of sheets) {
-                sheet.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(sheet.customer_id) || null;
-                const estimates = db.prepare('SELECT * FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
-                for (const est of estimates) {
-                    est.estValues = db.prepare('SELECT * FROM est_values WHERE estimate_id = ?').all(est.id);
+            const sheetIds = sheets.map(s => s.id);
+            let estimates = [];
+            let estValues = [];
+            if (sheetIds.length > 0) {
+                const sheetPlaceholders = sheetIds.map(() => '?').join(',');
+                estimates = await db.prepare(`SELECT * FROM estimates WHERE custom_sheet_id IN (${sheetPlaceholders})`).all(...sheetIds);
+
+                const estimateIds = estimates.map(e => e.id);
+                if (estimateIds.length > 0) {
+                    const estPlaceholders = estimateIds.map(() => '?').join(',');
+                    estValues = await db.prepare(`SELECT * FROM est_values WHERE estimate_id IN (${estPlaceholders})`).all(...estimateIds);
                 }
-                sheet.estimates = estimates;
+            }
+
+            const estValuesMap = new Map();
+            for (const val of estValues) {
+                const m = parseFloat(val.markup);
+                const markup = isNaN(m) || m <= 0 ? 1 : m;
+                const pricePer = (parseFloat(val.basePrice) || 0) * (parseFloat(val.priceModifier) || 0) * markup - (parseFloat(val.discount) || 0);
+
+                const mappedVal = { ...val, pricePer };
+                if (!estValuesMap.has(val.estimate_id)) estValuesMap.set(val.estimate_id, []);
+                estValuesMap.get(val.estimate_id).push(mappedVal);
+            }
+
+            const estimatesMap = new Map();
+            for (const est of estimates) {
+                est.estValues = estValuesMap.get(est.id) || [];
+                if (!estimatesMap.has(est.custom_sheet_id)) estimatesMap.set(est.custom_sheet_id, []);
+                estimatesMap.get(est.custom_sheet_id).push(est);
+            }
+
+            for (const sheet of sheets) {
+                sheet.customer = sheet.customer_id ? {
+                    id: sheet.customer_id,
+                    fname: sheet.customer_fname,
+                    lname: sheet.customer_lname
+                } : null;
+                sheet.estimates = estimatesMap.get(sheet.id) || [];
+                sheet.custom_images = [];
             }
 
             return sendPaginated(res, sheets, {
@@ -73,14 +158,41 @@ router.get('/', (req, res) => {
         }
 
         // C. Simple flat list
-        const sheets = db.prepare('SELECT * FROM custom_sheets').all();
+        const sheets = await db.prepare(`
+            SELECT s.*, c.fname AS customer_fname, c.lname AS customer_lname
+            FROM custom_sheets s
+            LEFT JOIN customers c ON s.customer_id = c.id
+        `).all();
+
+        const estimates = await db.prepare('SELECT * FROM estimates').all();
+        const estValues = await db.prepare('SELECT * FROM est_values').all();
+
+        const estValuesMap = new Map();
+        for (const val of estValues) {
+            const m = parseFloat(val.markup);
+            const markup = isNaN(m) || m <= 0 ? 1 : m;
+            const pricePer = (parseFloat(val.basePrice) || 0) * (parseFloat(val.priceModifier) || 0) * markup - (parseFloat(val.discount) || 0);
+
+            const mappedVal = { ...val, pricePer };
+            if (!estValuesMap.has(val.estimate_id)) estValuesMap.set(val.estimate_id, []);
+            estValuesMap.get(val.estimate_id).push(mappedVal);
+        }
+
+        const estimatesMap = new Map();
+        for (const est of estimates) {
+            est.estValues = estValuesMap.get(est.id) || [];
+            if (!estimatesMap.has(est.custom_sheet_id)) estimatesMap.set(est.custom_sheet_id, []);
+            estimatesMap.get(est.custom_sheet_id).push(est);
+        }
+
         for (const sheet of sheets) {
-            sheet.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(sheet.customer_id) || null;
-            const estimates = db.prepare('SELECT * FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
-            for (const est of estimates) {
-                est.estValues = db.prepare('SELECT * FROM est_values WHERE estimate_id = ?').all(est.id);
-            }
-            sheet.estimates = estimates;
+            sheet.customer = sheet.customer_id ? {
+                id: sheet.customer_id,
+                fname: sheet.customer_fname,
+                lname: sheet.customer_lname
+            } : null;
+            sheet.estimates = estimatesMap.get(sheet.id) || [];
+            sheet.custom_images = [];
         }
         return sendSuccess(res, sheets);
     } catch (err) {
@@ -89,10 +201,10 @@ router.get('/', (req, res) => {
 });
 
 // 2. GET /:id (Show single custom sheet details)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const sheet = getCustomSheetWithDetails(id);
+        const sheet = await getCustomSheetWithDetails(id);
         if (!sheet) {
             return sendError(res, 'Custom sheet not found', 404);
         }
@@ -103,22 +215,22 @@ router.get('/:id', (req, res) => {
 });
 
 // 3. POST / (Create custom sheet with nested estimates/values)
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     try {
-        const { customer_id, name, note, estimates } = req.body;
+        const { customer_id, name, note, estimates, custom_images } = req.body;
         const timestamp = getTimestamp();
 
         if (!customer_id || parseInt(customer_id) === 0) {
             return sendError(res, 'Customer cannot be blank', 400);
         }
 
-        const transaction = db.transaction(() => {
+        const transaction = db.transaction(async () => {
             // Save custom sheet
             const insertSheet = db.prepare(`
                 INSERT INTO custom_sheets (customer_id, name, note, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
             `);
-            const sheetResult = insertSheet.run(customer_id, name || '', note || null, timestamp, timestamp);
+            const sheetResult = await insertSheet.run(customer_id, name || '', note || null, timestamp, timestamp);
             const sheetId = sheetResult.lastInsertRowid;
 
             // Save estimates and their est_values
@@ -129,12 +241,12 @@ router.post('/', (req, res) => {
                 `);
 
                 const insertVal = db.prepare(`
-                    INSERT INTO est_values (estimate_id, name, type, priceType, amt, pricePer, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO est_values (estimate_id, name, type, priceType, amt, basePrice, markup, discount, priceModifier, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `);
 
                 for (const est of estimates) {
-                    const estResult = insertEst.run(
+                    const estResult = await insertEst.run(
                         sheetId,
                         est.name || '',
                         est.note || null,
@@ -146,13 +258,16 @@ router.post('/', (req, res) => {
 
                     if (Array.isArray(est.estValues)) {
                         for (const val of est.estValues) {
-                            insertVal.run(
+                            await insertVal.run(
                                 estId,
                                 val.name || 'unknown',
                                 val.type || '',
                                 val.priceType || null,
                                 val.amt !== undefined ? parseFloat(val.amt) : 0,
-                                val.pricePer !== undefined ? parseFloat(val.pricePer) : 0,
+                                val.basePrice !== undefined ? parseFloat(val.basePrice) : 0,
+                                val.markup !== undefined ? parseFloat(val.markup) : 0,
+                                val.discount !== undefined ? parseFloat(val.discount) : 0,
+                                val.priceModifier !== undefined ? parseFloat(val.priceModifier) : 0,
                                 timestamp,
                                 timestamp
                             );
@@ -161,11 +276,30 @@ router.post('/', (req, res) => {
                 }
             }
 
+            // Save uploaded custom images
+            if (Array.isArray(custom_images) && custom_images.length > 0) {
+                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM custom_images').get();
+                let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
+
+                const insertImage = db.prepare(`
+                    INSERT INTO custom_images (custom_sheet_id, note, image, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                `);
+
+                for (const img of custom_images) {
+                    if (img.image) {
+                        const savedPath = saveBase64Image(img.image, 'custom', sheetId, nextImageId);
+                        await insertImage.run(sheetId, img.note || null, savedPath, timestamp, timestamp);
+                        nextImageId++;
+                    }
+                }
+            }
+
             return sheetId;
         });
 
-        const sheetId = transaction();
-        const fullSheet = getCustomSheetWithDetails(sheetId);
+        const sheetId = await transaction();
+        const fullSheet = await getCustomSheetWithDetails(sheetId);
         return sendSuccess(res, fullSheet, 201);
     } catch (err) {
         return sendError(res, err.message);
@@ -173,14 +307,14 @@ router.post('/', (req, res) => {
 });
 
 // 4. PUT /:id (Differential update on custom sheet)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params; // customSheet_id
-        const { customer_id, name, note, estimatesToDelete, estimates } = req.body;
+        const { customer_id, name, note, estimatesToDelete, estimates, custom_images } = req.body;
         const timestamp = getTimestamp();
 
         // Check if custom sheet exists
-        const existingSheet = db.prepare('SELECT id FROM custom_sheets WHERE id = ?').get(id);
+        const existingSheet = await db.prepare('SELECT id FROM custom_sheets WHERE id = ?').get(id);
         if (!existingSheet) {
             return sendError(res, 'Custom sheet not found', 404);
         }
@@ -189,9 +323,9 @@ router.put('/:id', (req, res) => {
             return sendError(res, 'Customer cannot be blank', 400);
         }
 
-        const transaction = db.transaction(() => {
+        const transaction = db.transaction(async () => {
             // Update custom sheet info
-            db.prepare(`
+            await db.prepare(`
                 UPDATE custom_sheets
                 SET name = ?, note = ?, updated_at = ?
                 WHERE id = ?
@@ -200,8 +334,8 @@ router.put('/:id', (req, res) => {
             // Delete estimates listed in estimatesToDelete
             if (Array.isArray(estimatesToDelete)) {
                 for (const delId of estimatesToDelete) {
-                    db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(delId);
-                    db.prepare('DELETE FROM estimates WHERE id = ?').run(delId);
+                    await db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(delId);
+                    await db.prepare('DELETE FROM estimates WHERE id = ?').run(delId);
                 }
             }
 
@@ -219,13 +353,13 @@ router.put('/:id', (req, res) => {
                 `);
 
                 const insertVal = db.prepare(`
-                    INSERT INTO est_values (estimate_id, name, type, priceType, amt, pricePer, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO est_values (estimate_id, name, type, priceType, amt, basePrice, markup, discount, priceModifier, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `);
 
                 const updateVal = db.prepare(`
                     UPDATE est_values
-                    SET name = ?, priceType = ?, type = ?, pricePer = ?, amt = ?, updated_at = ?
+                    SET name = ?, priceType = ?, type = ?, basePrice = ?, markup = ?, discount = ?, priceModifier = ?, amt = ?, updated_at = ?
                     WHERE id = ?
                 `);
 
@@ -234,12 +368,12 @@ router.put('/:id', (req, res) => {
                 for (const est of estimates) {
                     if (est.id) {
                         // 1. Update existing estimate
-                        updateEst.run(est.name || '', est.note || null, est.isPrimary ? 1 : 0, timestamp, est.id);
+                        await updateEst.run(est.name || '', est.note || null, est.isPrimary ? 1 : 0, timestamp, est.id);
 
                         // Delete removed est_values
                         if (Array.isArray(est.estValuesToDelete)) {
                             for (const delValId of est.estValuesToDelete) {
-                                deleteVal.run(delValId);
+                                await deleteVal.run(delValId);
                             }
                         }
 
@@ -248,24 +382,30 @@ router.put('/:id', (req, res) => {
                             for (const val of est.estValues) {
                                 if (val.id) {
                                     // Update existing estValue
-                                    updateVal.run(
+                                    await updateVal.run(
                                         val.name || 'unknown',
                                         val.priceType || null,
                                         val.type || '',
-                                        val.pricePer !== undefined ? parseFloat(val.pricePer) : 0,
+                                        val.basePrice !== undefined ? parseFloat(val.basePrice) : 0,
+                                        val.markup !== undefined ? parseFloat(val.markup) : 0,
+                                        val.discount !== undefined ? parseFloat(val.discount) : 0,
+                                        val.priceModifier !== undefined ? parseFloat(val.priceModifier) : 0,
                                         val.amt !== undefined ? parseFloat(val.amt) : 0,
                                         timestamp,
                                         val.id
                                     );
                                 } else {
                                     // Insert new estValue under existing estimate
-                                    insertVal.run(
+                                    await insertVal.run(
                                         est.id,
                                         val.name || 'unknown',
                                         val.type || '',
                                         val.priceType || null,
                                         val.amt !== undefined ? parseFloat(val.amt) : 0,
-                                        val.pricePer !== undefined ? parseFloat(val.pricePer) : 0,
+                                        val.basePrice !== undefined ? parseFloat(val.basePrice) : 0,
+                                        val.markup !== undefined ? parseFloat(val.markup) : 0,
+                                        val.discount !== undefined ? parseFloat(val.discount) : 0,
+                                        val.priceModifier !== undefined ? parseFloat(val.priceModifier) : 0,
                                         timestamp,
                                         timestamp
                                     );
@@ -274,7 +414,7 @@ router.put('/:id', (req, res) => {
                         }
                     } else {
                         // 2. Insert new estimate
-                        const estResult = insertEst.run(
+                        const estResult = await insertEst.run(
                             id,
                             est.name || '',
                             est.note || null,
@@ -286,13 +426,16 @@ router.put('/:id', (req, res) => {
 
                         if (Array.isArray(est.estValues)) {
                             for (const val of est.estValues) {
-                                insertVal.run(
+                                await insertVal.run(
                                     newEstId,
                                     val.name || 'unknown',
                                     val.type || '',
                                     val.priceType || null,
-                                    val.pricePer !== undefined ? parseFloat(val.pricePer) : 0,
                                     val.amt !== undefined ? parseFloat(val.amt) : 0,
+                                    val.basePrice !== undefined ? parseFloat(val.basePrice) : 0,
+                                    val.markup !== undefined ? parseFloat(val.markup) : 0,
+                                    val.discount !== undefined ? parseFloat(val.discount) : 0,
+                                    val.priceModifier !== undefined ? parseFloat(val.priceModifier) : 0,
                                     timestamp,
                                     timestamp
                                 );
@@ -301,10 +444,39 @@ router.put('/:id', (req, res) => {
                     }
                 }
             }
+
+            // Save/Update custom images
+            if (Array.isArray(custom_images) && custom_images.length > 0) {
+                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM custom_images').get();
+                let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
+
+                const insertImage = db.prepare(`
+                    INSERT INTO custom_images (custom_sheet_id, note, image, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                `);
+
+                const updateImageNote = db.prepare(`
+                    UPDATE custom_images
+                    SET note = ?, updated_at = ?
+                    WHERE id = ?
+                `);
+
+                for (const img of custom_images) {
+                    if (img.id) {
+                        // Update note for existing image
+                        await updateImageNote.run(img.note || '', timestamp, img.id);
+                    } else if (img.image) {
+                        // Save new Base64 image
+                        const savedPath = saveBase64Image(img.image, 'custom', id, nextImageId);
+                        await insertImage.run(id, img.note || null, savedPath, timestamp, timestamp);
+                        nextImageId++;
+                    }
+                }
+            }
         });
 
-        transaction();
-        const fullSheet = getCustomSheetWithDetails(id);
+        await transaction();
+        const fullSheet = await getCustomSheetWithDetails(id);
         return sendSuccess(res, fullSheet);
     } catch (err) {
         return sendError(res, err.message);
@@ -312,30 +484,56 @@ router.put('/:id', (req, res) => {
 });
 
 // 5. DELETE /:id (Delete custom sheet and cascade estimates/estimate values)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const sheet = db.prepare('SELECT id FROM custom_sheets WHERE id = ?').get(id);
+        const sheet = await db.prepare('SELECT id FROM custom_sheets WHERE id = ?').get(id);
         if (!sheet) {
             return sendError(res, 'Custom sheet not found', 404);
         }
 
-        const transaction = db.transaction(() => {
+        // Fetch associated images and delete their physical files
+        const images = await db.prepare('SELECT image FROM custom_images WHERE custom_sheet_id = ?').all(id);
+        for (const img of images) {
+            deleteImageFile(img.image);
+        }
+
+        const transaction = db.transaction(async () => {
+            // Delete custom images from DB
+            await db.prepare('DELETE FROM custom_images WHERE custom_sheet_id = ?').run(id);
             // Find estimates
-            const estimates = db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(id);
+            const estimates = await db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(id);
             for (const est of estimates) {
                 // Delete estimate values
-                db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(est.id);
+                await db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(est.id);
             }
             // Delete estimates
-            db.prepare('DELETE FROM estimates WHERE custom_sheet_id = ?').run(id);
+            await db.prepare('DELETE FROM estimates WHERE custom_sheet_id = ?').run(id);
             // Delete custom sheet
-            db.prepare('DELETE FROM custom_sheets WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM custom_sheets WHERE id = ?').run(id);
         });
 
-        transaction();
+        await transaction();
         return sendSuccess(res, { id: parseInt(id) });
+    } catch (err) {
+        return sendError(res, err.message);
+    }
+});
+
+// 6. DELETE /images/:id (Delete specific custom image by ID)
+router.delete('/images/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const image = await db.prepare('SELECT * FROM custom_images WHERE id = ?').get(id);
+        
+        if (image) {
+            deleteImageFile(image.image);
+            await db.prepare('DELETE FROM custom_images WHERE id = ?').run(id);
+            return sendSuccess(res, { id: parseInt(id), image: image.image });
+        } else {
+            return sendError(res, 'Image not found', 404);
+        }
     } catch (err) {
         return sendError(res, err.message);
     }

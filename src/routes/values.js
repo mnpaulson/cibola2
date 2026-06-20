@@ -4,7 +4,7 @@ const { db, getTimestamp } = require('../db');
 const { sendSuccess, sendError } = require('../utils/response');
 
 // 1. GET / (List values, active, or filtered by type_id)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const { active, type_id } = req.query;
         let queryStr = 'SELECT * FROM "values"';
@@ -23,9 +23,9 @@ router.get('/', (req, res) => {
             queryStr += ' WHERE ' + conditions.join(' AND ');
         }
 
-        queryStr += ' ORDER BY CAST("order" AS INTEGER) ASC';
+        queryStr += ' ORDER BY ("order" + 0) ASC';
 
-        const values = db.prepare(queryStr).all(...params);
+        const values = await db.prepare(queryStr).all(...params);
         return sendSuccess(res, values);
     } catch (err) {
         return sendError(res, err.message);
@@ -33,9 +33,9 @@ router.get('/', (req, res) => {
 });
 
 // 2. GET /gold (Get GoldCAD value and default exchange rate)
-router.get('/gold', (req, res) => {
+router.get('/gold', async (req, res) => {
     try {
-        const goldValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'GoldCAD' OR name = 'Gold'").get();
+        const goldValRecord = await db.prepare("SELECT value1 FROM \"values\" WHERE name = 'GoldCAD' OR name = 'Gold'").get();
         const goldCAD = goldValRecord ? parseFloat(goldValRecord.value1) || 0 : 0;
         return sendSuccess(res, {
             goldCAD,
@@ -47,9 +47,9 @@ router.get('/gold', (req, res) => {
 });
 
 // 3. GET /plat (Get PlatCAD value)
-router.get('/plat', (req, res) => {
+router.get('/plat', async (req, res) => {
     try {
-        const platValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'PlatCAD' OR name = 'Platinum'").get();
+        const platValRecord = await db.prepare("SELECT value1 FROM \"values\" WHERE name = 'PlatCAD' OR name = 'Platinum'").get();
         const platCAD = platValRecord ? parseFloat(platValRecord.value1) || 0 : 0;
         return sendSuccess(res, {
             platCAD
@@ -60,9 +60,9 @@ router.get('/plat', (req, res) => {
 });
 
 // 3.5. GET /silver (Get SilverCAD value)
-router.get('/silver', (req, res) => {
+router.get('/silver', async (req, res) => {
     try {
-        const silverValRecord = db.prepare("SELECT value1 FROM \"values\" WHERE name = 'SilverCAD' OR name = 'Silver'").get();
+        const silverValRecord = await db.prepare("SELECT value1 FROM \"values\" WHERE name = 'SilverCAD' OR name = 'Silver'").get();
         const silverCAD = silverValRecord ? parseFloat(silverValRecord.value1) || 0 : 0;
         return sendSuccess(res, {
             silverCAD
@@ -73,10 +73,10 @@ router.get('/silver', (req, res) => {
 });
 
 // 4. GET /:id (Get single value details)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const value = db.prepare('SELECT * FROM "values" WHERE id = ?').get(id);
+        const value = await db.prepare('SELECT * FROM "values" WHERE id = ?').get(id);
 
         if (!value) {
             return sendError(res, 'Value not found', 404);
@@ -89,9 +89,9 @@ router.get('/:id', (req, res) => {
 });
 
 // 5. POST / (Create lookup configuration)
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     try {
-        const { name, type_id, value1, value2, value3, value4, order, active } = req.body;
+        const { name, type_id, value1, value2, value3, order, active, markup, default: defaultValue } = req.body;
 
         if (!name) {
             return sendError(res, 'Value name is required', 400);
@@ -100,23 +100,24 @@ router.post('/', (req, res) => {
         const timestamp = getTimestamp();
 
         const insert = db.prepare(`
-            INSERT INTO "values" (name, type_id, value1, value2, value3, value4, "order", active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO "values" (name, type_id, value1, value2, value3, "order", active, created_at, updated_at, markup, "default")
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
-        const result = insert.run(
+        const result = await insert.run(
             name,
             type_id || 1,
             value1 || null,
             value2 || null,
             value3 || null,
-            value4 || null,
             order || null,
             active === false || active === 0 ? 0 : 1,
             timestamp,
-            timestamp
+            timestamp,
+            markup !== undefined ? markup : null,
+            defaultValue !== undefined ? defaultValue : null
         );
 
-        const newValue = db.prepare('SELECT * FROM "values" WHERE id = ?').get(result.lastInsertRowid);
+        const newValue = await db.prepare('SELECT * FROM "values" WHERE id = ?').get(result.lastInsertRowid);
         return sendSuccess(res, newValue, 201);
     } catch (err) {
         return sendError(res, err.message);
@@ -124,10 +125,10 @@ router.post('/', (req, res) => {
 });
 
 // 6. PUT /:id (Update lookup configuration)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, value1, value2, value3, value4, order, active } = req.body;
+        const { name, value1, value2, value3, order, active, markup, default: defaultValue } = req.body;
 
         if (!name) {
             return sendError(res, 'Value name is required', 400);
@@ -137,18 +138,19 @@ router.put('/:id', (req, res) => {
 
         const update = db.prepare(`
             UPDATE "values"
-            SET name = ?, value1 = ?, value2 = ?, value3 = ?, value4 = ?, "order" = ?, active = ?, updated_at = ?
+            SET name = ?, value1 = ?, value2 = ?, value3 = ?, "order" = ?, active = ?, updated_at = ?, markup = ?, "default" = ?
             WHERE id = ?
         `);
-        const result = update.run(
+        const result = await update.run(
             name,
             value1 || null,
             value2 || null,
             value3 || null,
-            value4 || null,
             order || null,
             active === false || active === 0 ? 0 : 1,
             timestamp,
+            markup !== undefined ? markup : null,
+            defaultValue !== undefined ? defaultValue : null,
             id
         );
 
@@ -156,7 +158,7 @@ router.put('/:id', (req, res) => {
             return sendError(res, 'Value not found', 404);
         }
 
-        const updatedValue = db.prepare('SELECT * FROM "values" WHERE id = ?').get(id);
+        const updatedValue = await db.prepare('SELECT * FROM "values" WHERE id = ?').get(id);
         return sendSuccess(res, updatedValue);
     } catch (err) {
         return sendError(res, err.message);
@@ -164,16 +166,16 @@ router.put('/:id', (req, res) => {
 });
 
 // 7. DELETE /:id (Delete lookup configuration)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const value = db.prepare('SELECT id FROM "values" WHERE id = ?').get(id);
+        const value = await db.prepare('SELECT id FROM "values" WHERE id = ?').get(id);
         if (!value) {
             return sendError(res, 'Value not found', 404);
         }
 
-        db.prepare('DELETE FROM "values" WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM "values" WHERE id = ?').run(id);
         return sendSuccess(res, { id: parseInt(id) });
     } catch (err) {
         return sendError(res, err.message);
@@ -218,29 +220,29 @@ router.post('/sync', async (req, res) => {
         ]);
 
         // Helper function to upsert a metal price record
-        const upsertPrice = (name, oldNames, price) => {
+        const upsertPrice = async (name, oldNames, price) => {
             const queryNames = [name, ...oldNames];
             const placeholders = queryNames.map(() => '?').join(',');
-            
+
             // Check if record exists
-            const existing = db.prepare(`
+            const existing = await db.prepare(`
                 SELECT id, name FROM "values" 
                 WHERE type_id = 2 AND name IN (${placeholders})
             `).get(...queryNames);
 
             if (existing) {
                 // Update existing record, setting name to the clean name if it was old
-                db.prepare(`
+                await db.prepare(`
                     UPDATE "values" 
                     SET name = ?, value1 = ?, updated_at = ? 
                     WHERE id = ?
                 `).run(name, price.toString(), timestamp, existing.id);
             } else {
                 // Find max order to place it nicely
-                const maxOrderRec = db.prepare(`SELECT MAX(CAST("order" AS INTEGER)) as maxOrder FROM "values"`).get();
+                const maxOrderRec = await db.prepare(`SELECT MAX("order" + 0) as maxOrder FROM "values"`).get();
                 const nextOrder = (maxOrderRec && maxOrderRec.maxOrder ? parseInt(maxOrderRec.maxOrder) : 0) + 1;
 
-                db.prepare(`
+                await db.prepare(`
                     INSERT INTO "values" (type_id, name, value1, "order", active, created_at, updated_at)
                     VALUES (2, ?, ?, ?, 1, ?, ?)
                 `).run(name, price.toString(), nextOrder.toString(), timestamp, timestamp);
@@ -248,13 +250,13 @@ router.post('/sync', async (req, res) => {
         };
 
         // 2. Perform updates inside a transaction
-        const syncTransaction = db.transaction(() => {
-            upsertPrice('GoldCAD', ['Gold'], goldPrice);
-            upsertPrice('SilverCAD', ['Silver'], silverPrice);
-            upsertPrice('PlatCAD', ['Platinum'], platPrice);
+        const syncTransaction = db.transaction(async () => {
+            await upsertPrice('GoldCAD', ['Gold'], goldPrice);
+            await upsertPrice('SilverCAD', ['Silver'], silverPrice);
+            await upsertPrice('PlatCAD', ['Platinum'], platPrice);
         });
-        
-        syncTransaction();
+
+        await syncTransaction();
 
         return sendSuccess(res, {
             GoldCAD: goldPrice,

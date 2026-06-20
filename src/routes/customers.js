@@ -5,7 +5,7 @@ const { deleteImageFile } = require('../utils/image');
 const { sendSuccess, sendError } = require('../utils/response');
 
 // 1. GET /customers (List, Recent, or Search)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const { type, q } = req.query;
         let customers;
@@ -13,7 +13,7 @@ router.get('/', (req, res) => {
         if (q) {
             const tokens = q.trim().split(/\s+/).filter(Boolean);
             if (tokens.length > 0) {
-                let sql = 'SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, note FROM customers WHERE ';
+                let sql = 'SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country FROM customers WHERE ';
                 const conditions = [];
                 const params = [];
                 
@@ -31,16 +31,16 @@ router.get('/', (req, res) => {
                 }
                 
                 sql += conditions.join(' OR ') + ' ORDER BY lname ASC, fname ASC LIMIT 100';
-                customers = db.prepare(sql).all(...params);
+                customers = await db.prepare(sql).all(...params);
             } else {
                 customers = [];
             }
         } else if (type === 'recent') {
-            customers = db.prepare('SELECT * FROM customers ORDER BY updated_at DESC LIMIT 10').all();
+            customers = await db.prepare('SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, created_at, updated_at FROM customers ORDER BY updated_at DESC LIMIT 10').all();
         } else if (type === 'search') {
-            customers = db.prepare('SELECT id, fname, lname, phone FROM customers').all();
+            customers = await db.prepare('SELECT id, fname, lname, phone FROM customers').all();
         } else {
-            customers = db.prepare('SELECT * FROM customers').all();
+            customers = await db.prepare('SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, created_at, updated_at FROM customers').all();
         }
 
         return sendSuccess(res, customers);
@@ -50,10 +50,10 @@ router.get('/', (req, res) => {
 });
 
 // 2. GET /customers/:id (Show single customer)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+        const customer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
         
         if (!customer) {
             return sendError(res, 'Customer not found', 404);
@@ -66,7 +66,7 @@ router.get('/:id', (req, res) => {
 });
 
 // 3. POST /customers (Store/Create customer)
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     try {
         const { fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, note } = req.body;
         
@@ -81,7 +81,7 @@ router.post('/', (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         
-        const result = insert.run(
+        const result = await insert.run(
             fname,
             lname,
             phone || null,
@@ -96,7 +96,7 @@ router.post('/', (req, res) => {
             timestamp
         );
 
-        const newCustomer = db.prepare('SELECT * FROM customers WHERE id = ?').get(result.lastInsertRowid);
+        const newCustomer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(result.lastInsertRowid);
         return sendSuccess(res, newCustomer, 201);
     } catch (err) {
         return sendError(res, err.message);
@@ -104,7 +104,7 @@ router.post('/', (req, res) => {
 });
 
 // 4. PUT /customers/:id (Update customer)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country, note } = req.body;
@@ -121,7 +121,7 @@ router.put('/:id', (req, res) => {
             WHERE id = ?
         `);
         
-        const result = update.run(
+        const result = await update.run(
             fname,
             lname,
             phone || null,
@@ -140,7 +140,7 @@ router.put('/:id', (req, res) => {
             return sendError(res, 'Customer not found', 404);
         }
 
-        const updatedCustomer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+        const updatedCustomer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
         return sendSuccess(res, updatedCustomer);
     } catch (err) {
         return sendError(res, err.message);
@@ -148,59 +148,66 @@ router.put('/:id', (req, res) => {
 });
 
 // 5. DELETE /customers/:id (Delete customer and related files/db rows via cascade)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
         // Check if customer exists first
-        const customer = db.prepare('SELECT id FROM customers WHERE id = ?').get(id);
+        const customer = await db.prepare('SELECT id FROM customers WHERE id = ?').get(id);
         if (!customer) {
             return sendError(res, 'Customer not found', 404);
         }
 
-        const transaction = db.transaction(() => {
+        const transaction = db.transaction(async () => {
             // Find associated jobs to clean up their image files
-            const jobs = db.prepare('SELECT id FROM jobs WHERE customer_id = ?').all(id);
+            const jobs = await db.prepare('SELECT id FROM jobs WHERE customer_id = ?').all(id);
             for (const job of jobs) {
-                const images = db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(job.id);
+                const images = await db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(job.id);
                 for (const img of images) {
                     deleteImageFile(img.image);
                 }
                 // Delete job images from database
-                db.prepare('DELETE FROM job_images WHERE job_id = ?').run(job.id);
+                await db.prepare('DELETE FROM job_images WHERE job_id = ?').run(job.id);
             }
 
             // Delete jobs (ON DELETE CASCADE is defined but this double checks and removes them cleanly)
-            db.prepare('DELETE FROM jobs WHERE customer_id = ?').run(id);
+            await db.prepare('DELETE FROM jobs WHERE customer_id = ?').run(id);
 
-            // Find associated custom sheets and delete their estimates & est_values
-            const sheets = db.prepare('SELECT id FROM custom_sheets WHERE customer_id = ?').all(id);
+            // Find associated custom sheets and delete their estimates & est_values & custom_images
+            const sheets = await db.prepare('SELECT id FROM custom_sheets WHERE customer_id = ?').all(id);
             for (const sheet of sheets) {
-                const estimates = db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
-                for (const est of estimates) {
-                    db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(est.id);
+                // Fetch associated images and delete their physical files
+                const images = await db.prepare('SELECT image FROM custom_images WHERE custom_sheet_id = ?').all(sheet.id);
+                for (const img of images) {
+                    deleteImageFile(img.image);
                 }
-                db.prepare('DELETE FROM estimates WHERE custom_sheet_id = ?').run(sheet.id);
+                await db.prepare('DELETE FROM custom_images WHERE custom_sheet_id = ?').run(sheet.id);
+
+                const estimates = await db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
+                for (const est of estimates) {
+                    await db.prepare('DELETE FROM est_values WHERE estimate_id = ?').run(est.id);
+                }
+                await db.prepare('DELETE FROM estimates WHERE custom_sheet_id = ?').run(sheet.id);
             }
-            db.prepare('DELETE FROM custom_sheets WHERE customer_id = ?').run(id);
+            await db.prepare('DELETE FROM custom_sheets WHERE customer_id = ?').run(id);
 
             // Find associated goldcredits to clean up items and images
-            const credits = db.prepare('SELECT id FROM goldcredits WHERE customer_id = ?').all(id);
+            const credits = await db.prepare('SELECT id FROM goldcredits WHERE customer_id = ?').all(id);
             for (const credit of credits) {
-                const creditImages = db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
+                const creditImages = await db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
                 for (const img of creditImages) {
                     deleteImageFile(img.image);
                 }
-                db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(credit.id);
-                db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(credit.id);
+                await db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(credit.id);
+                await db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(credit.id);
             }
-            db.prepare('DELETE FROM goldcredits WHERE customer_id = ?').run(id);
+            await db.prepare('DELETE FROM goldcredits WHERE customer_id = ?').run(id);
 
             // Finally delete the customer
-            db.prepare('DELETE FROM customers WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM customers WHERE id = ?').run(id);
         });
 
-        transaction();
+        await transaction();
         return sendSuccess(res, { id: parseInt(id) });
     } catch (err) {
         return sendError(res, err.message);

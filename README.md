@@ -156,7 +156,6 @@ Configuration table for Karats, diamonds, other base rates, and metal spot price
 * `value1` (TEXT, Nullable - stores gold ratio, base cost, or current gram rate)
 * `value2` (TEXT, Nullable - stores markup multiplier)
 * `value3` (TEXT, Nullable - category description)
-* `value4` (TEXT, Nullable)
 * `"order"` (TEXT, sorting value)
 * `active` (INTEGER, Default 1 - Boolean)
 * `created_at`, `updated_at` (DATETIME)
@@ -342,10 +341,10 @@ All endpoints return a standard JSON envelope:
   * Returns `{ platCAD }`.
 * `GET /values/:id` — Returns details of a single lookup value.
 * `POST /values` — Creates a lookup configuration.
-  * Request Body: `{ name, type_id, value1, value2, value3, value4, order, active }`.
+  * Request Body: `{ name, type_id, value1, value2, value3, order, active }`.
   * Returns the created lookup value object.
 * `PUT /values/:id` — Updates a lookup configuration by ID.
-  * Request Body: `{ name, value1, value2, value3, value4, order, active }`.
+  * Request Body: `{ name, value1, value2, value3, order, active }`.
   * Returns the updated lookup value object.
 * `DELETE /values/:id` — Deletes a lookup configuration by ID.
   * Returns `{ id: <deleted_id> }`.

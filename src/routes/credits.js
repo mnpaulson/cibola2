@@ -5,28 +5,60 @@ const { deleteImageFile, saveBase64Image } = require('../utils/image');
 const { sendSuccess, sendPaginated, sendError } = require('../utils/response');
 
 // Helper to get gold credit details loaded (nested customer, employee, items, images)
-function getCreditWithDetails(creditId) {
-    const credit = db.prepare('SELECT * FROM goldcredits WHERE id = ?').get(creditId);
+async function getCreditWithDetails(creditId) {
+    const credit = await db.prepare('SELECT * FROM goldcredits WHERE id = ?').get(creditId);
     if (credit) {
-        credit.credit_images = db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(creditId);
-        credit.credit_items = db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(creditId);
-        credit.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(credit.customer_id) || null;
-        credit.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(credit.employee_id) || null;
+        credit.credit_images = await db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(creditId);
+        credit.credit_items = await db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(creditId);
+        credit.customer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(credit.customer_id) || null;
+        credit.employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(credit.employee_id) || null;
     }
     return credit || null;
 }
 
 // 1. GET / (List all, customer-specific, or paginated)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const { customer_id, page, limit, sortBy, descending } = req.query;
 
         // A. Customer specific credits
         if (customer_id) {
-            const credits = db.prepare('SELECT * FROM goldcredits WHERE customer_id = ?').all(customer_id);
+            const credits = await db.prepare(`
+                SELECT g.*, 
+                       c.fname AS customer_fname, c.lname AS customer_lname,
+                       e.name AS employee_name, e.active AS employee_active
+                FROM goldcredits g
+                LEFT JOIN customers c ON g.customer_id = c.id
+                LEFT JOIN employees e ON g.employee_id = e.id
+                WHERE g.customer_id = ?
+            `).all(customer_id);
+
+            const creditIds = credits.map(c => c.id);
+            let creditItems = [];
+            if (creditIds.length > 0) {
+                const placeholders = creditIds.map(() => '?').join(',');
+                creditItems = await db.prepare(`SELECT * FROM credit_items WHERE goldcredit_id IN (${placeholders})`).all(...creditIds);
+            }
+
+            const itemsMap = new Map();
+            for (const item of creditItems) {
+                if (!itemsMap.has(item.goldcredit_id)) itemsMap.set(item.goldcredit_id, []);
+                itemsMap.get(item.goldcredit_id).push(item);
+            }
+
             for (const credit of credits) {
-                credit.credit_images = db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
-                credit.credit_items = db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(credit.id);
+                credit.customer = credit.customer_id ? {
+                    id: credit.customer_id,
+                    fname: credit.customer_fname,
+                    lname: credit.customer_lname
+                } : null;
+                credit.employee = credit.employee_id ? {
+                    id: credit.employee_id,
+                    name: credit.employee_name,
+                    active: credit.employee_active
+                } : null;
+                credit.credit_items = itemsMap.get(credit.id) || [];
+                credit.credit_images = [];
             }
             return sendSuccess(res, credits);
         }
@@ -39,24 +71,50 @@ router.get('/', (req, res) => {
             const currentPage = parseInt(page) || 1;
             const offset = (currentPage - 1) * parsedLimit;
 
-            const totalRecord = db.prepare('SELECT COUNT(*) as count FROM goldcredits').get();
+            const totalRecord = await db.prepare('SELECT COUNT(*) as count FROM goldcredits').get();
             const total = totalRecord ? totalRecord.count : 0;
             const lastPage = Math.ceil(total / parsedLimit) || 1;
 
             const allowedColumns = ['id', 'customer_id', 'employee_id', 'gold_cad', 'plat_cad', 'gold_date', 'used', 'credit_type', 'credit_value', 'created_at', 'updated_at'];
             const validatedSortCol = allowedColumns.includes(sortColumn) ? sortColumn : 'created_at';
 
-            const credits = db.prepare(`
-                SELECT * FROM goldcredits
-                ORDER BY ${validatedSortCol} ${sortDirection}
+            const credits = await db.prepare(`
+                SELECT g.*, 
+                       c.fname AS customer_fname, c.lname AS customer_lname,
+                       e.name AS employee_name, e.active AS employee_active
+                FROM goldcredits g
+                LEFT JOIN customers c ON g.customer_id = c.id
+                LEFT JOIN employees e ON g.employee_id = e.id
+                ORDER BY g.${validatedSortCol} ${sortDirection}
                 LIMIT ? OFFSET ?
             `).all(parsedLimit, offset);
 
+            const creditIds = credits.map(c => c.id);
+            let creditItems = [];
+            if (creditIds.length > 0) {
+                const placeholders = creditIds.map(() => '?').join(',');
+                creditItems = await db.prepare(`SELECT * FROM credit_items WHERE goldcredit_id IN (${placeholders})`).all(...creditIds);
+            }
+
+            const itemsMap = new Map();
+            for (const item of creditItems) {
+                if (!itemsMap.has(item.goldcredit_id)) itemsMap.set(item.goldcredit_id, []);
+                itemsMap.get(item.goldcredit_id).push(item);
+            }
+
             for (const credit of credits) {
-                credit.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(credit.customer_id) || null;
-                credit.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(credit.employee_id) || null;
-                credit.credit_images = db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
-                credit.credit_items = db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(credit.id);
+                credit.customer = credit.customer_id ? {
+                    id: credit.customer_id,
+                    fname: credit.customer_fname,
+                    lname: credit.customer_lname
+                } : null;
+                credit.employee = credit.employee_id ? {
+                    id: credit.employee_id,
+                    name: credit.employee_name,
+                    active: credit.employee_active
+                } : null;
+                credit.credit_items = itemsMap.get(credit.id) || [];
+                credit.credit_images = [];
             }
 
             return sendPaginated(res, credits, {
@@ -68,12 +126,36 @@ router.get('/', (req, res) => {
         }
 
         // C. List all credits flat
-        const credits = db.prepare('SELECT * FROM goldcredits').all();
+        const credits = await db.prepare(`
+            SELECT g.*, 
+                   c.fname AS customer_fname, c.lname AS customer_lname,
+                   e.name AS employee_name, e.active AS employee_active
+            FROM goldcredits g
+            LEFT JOIN customers c ON g.customer_id = c.id
+            LEFT JOIN employees e ON g.employee_id = e.id
+        `).all();
+
+        const creditItems = await db.prepare('SELECT * FROM credit_items').all();
+
+        const itemsMap = new Map();
+        for (const item of creditItems) {
+            if (!itemsMap.has(item.goldcredit_id)) itemsMap.set(item.goldcredit_id, []);
+            itemsMap.get(item.goldcredit_id).push(item);
+        }
+
         for (const credit of credits) {
-            credit.credit_images = db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
-            credit.credit_items = db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(credit.id);
-            credit.customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(credit.customer_id) || null;
-            credit.employee = db.prepare('SELECT * FROM employees WHERE id = ?').get(credit.employee_id) || null;
+            credit.customer = credit.customer_id ? {
+                id: credit.customer_id,
+                fname: credit.customer_fname,
+                lname: credit.customer_lname
+            } : null;
+            credit.employee = credit.employee_id ? {
+                id: credit.employee_id,
+                name: credit.employee_name,
+                active: credit.employee_active
+            } : null;
+            credit.credit_items = itemsMap.get(credit.id) || [];
+            credit.credit_images = [];
         }
         return sendSuccess(res, credits);
     } catch (err) {
@@ -82,10 +164,10 @@ router.get('/', (req, res) => {
 });
 
 // 2. GET /:id (Show single credit details)
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const credit = getCreditWithDetails(id);
+        const credit = await getCreditWithDetails(id);
         if (!credit) {
             return sendError(res, 'Credit not found', 404);
         }
@@ -96,7 +178,7 @@ router.get('/:id', (req, res) => {
 });
 
 // 3. POST / (Create a credit record)
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     try {
         const { customer_id, employee_id, goldCAD, platCAD, metalPriceDate, note, used, credit_type, credit_value, credit_items, credit_images } = req.body;
         const timestamp = getTimestamp();
@@ -110,7 +192,7 @@ router.post('/', (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        const result = insertCredit.run(
+        const result = await insertCredit.run(
             customer_id,
             employee_id || 1,
             goldCAD !== undefined ? parseFloat(goldCAD) : 0,
@@ -134,7 +216,7 @@ router.post('/', (req, res) => {
             `);
 
             for (const item of credit_items) {
-                insertItem.run(
+                await insertItem.run(
                     creditId,
                     item.item !== undefined ? parseInt(item.item) : 0,
                     item.markup !== undefined ? parseFloat(item.markup) : 0,
@@ -149,7 +231,7 @@ router.post('/', (req, res) => {
 
         // Save nested images
         if (Array.isArray(credit_images) && credit_images.length > 0) {
-            const maxImageRecord = db.prepare('SELECT MAX(id) as maxId FROM credit_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM credit_images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
@@ -160,13 +242,13 @@ router.post('/', (req, res) => {
             for (const img of credit_images) {
                 if (img.image) {
                     const savedPath = saveBase64Image(img.image, 'credit', creditId, nextImageId);
-                    insertImage.run(creditId, img.note || null, savedPath, timestamp, timestamp);
+                    await insertImage.run(creditId, img.note || null, savedPath, timestamp, timestamp);
                     nextImageId++;
                 }
             }
         }
 
-        const newCredit = getCreditWithDetails(creditId);
+        const newCredit = await getCreditWithDetails(creditId);
         return sendSuccess(res, newCredit, 201);
     } catch (err) {
         return sendError(res, err.message);
@@ -174,14 +256,14 @@ router.post('/', (req, res) => {
 });
 
 // 4. PUT /:id (Update main credit info)
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const { customer_id, note, used, credit_type, credit_value } = req.body;
         const timestamp = getTimestamp();
 
         // Check if credit exists
-        const existingCredit = db.prepare('SELECT id FROM goldcredits WHERE id = ?').get(id);
+        const existingCredit = await db.prepare('SELECT id FROM goldcredits WHERE id = ?').get(id);
         if (!existingCredit) {
             return sendError(res, 'Credit not found', 404);
         }
@@ -195,7 +277,7 @@ router.put('/:id', (req, res) => {
             SET customer_id = ?, note = ?, used = ?, credit_type = ?, credit_value = ?, updated_at = ?
             WHERE id = ?
         `);
-        update.run(
+        await update.run(
             customer_id,
             note || null,
             used ? 1 : 0,
@@ -205,7 +287,7 @@ router.put('/:id', (req, res) => {
             id
         );
 
-        const updatedCredit = getCreditWithDetails(id);
+        const updatedCredit = await getCreditWithDetails(id);
         return sendSuccess(res, updatedCredit);
     } catch (err) {
         return sendError(res, err.message);
@@ -213,31 +295,31 @@ router.put('/:id', (req, res) => {
 });
 
 // 5. DELETE /:id (Delete credit and related files/db rows)
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const credit = db.prepare('SELECT id FROM goldcredits WHERE id = ?').get(id);
+        const credit = await db.prepare('SELECT id FROM goldcredits WHERE id = ?').get(id);
         if (!credit) {
             return sendError(res, 'Credit not found', 404);
         }
 
         // Fetch associated images and delete their physical files
-        const images = db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(id);
+        const images = await db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(id);
         for (const img of images) {
             deleteImageFile(img.image);
         }
 
-        const transaction = db.transaction(() => {
+        const transaction = db.transaction(async () => {
             // Delete credit images from DB
-            db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(id);
+            await db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(id);
             // Delete credit items from DB
-            db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(id);
+            await db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(id);
             // Delete credit record
-            db.prepare('DELETE FROM goldcredits WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM goldcredits WHERE id = ?').run(id);
         });
 
-        transaction();
+        await transaction();
         return sendSuccess(res, { id: parseInt(id) });
     } catch (err) {
         return sendError(res, err.message);
@@ -245,14 +327,14 @@ router.delete('/:id', (req, res) => {
 });
 
 // 6. DELETE /images/:id (Delete specific credit image by ID)
-router.delete('/images/:id', (req, res) => {
+router.delete('/images/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const image = db.prepare('SELECT * FROM credit_images WHERE id = ?').get(id);
+        const image = await db.prepare('SELECT * FROM credit_images WHERE id = ?').get(id);
         
         if (image) {
             deleteImageFile(image.image);
-            db.prepare('DELETE FROM credit_images WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM credit_images WHERE id = ?').run(id);
             return sendSuccess(res, { id: parseInt(id), image: image.image });
         } else {
             return sendError(res, 'Image not found', 404);
