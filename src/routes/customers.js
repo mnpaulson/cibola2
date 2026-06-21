@@ -14,23 +14,33 @@ router.get('/', async (req, res) => {
             const tokens = q.trim().split(/\s+/).filter(Boolean);
             if (tokens.length > 0) {
                 let sql = 'SELECT id, fname, lname, phone, email, addr_st, addr_city, addr_prov, addr_postal, addr_country FROM customers WHERE ';
-                const conditions = [];
+                const tokenGroups = [];
                 const params = [];
                 
                 for (const token of tokens) {
+                    const tokenConditions = [];
                     // 1. Substring matches
-                    conditions.push('(fname LIKE ? OR lname LIKE ? OR phone LIKE ?)');
+                    tokenConditions.push('(fname LIKE ? OR lname LIKE ? OR phone LIKE ?)');
                     params.push(`%${token}%`, `%${token}%`, `%${token}%`);
                     
                     // 2. Prefix matches for spelling mistake fallback (if token length >= 2)
                     if (token.length >= 2) {
-                        const prefix = token.slice(0, 2);
-                        conditions.push('(fname LIKE ? OR lname LIKE ?)');
+                        let prefix;
+                        if (token.length >= 5) {
+                            prefix = token.slice(0, token.length - 2);
+                        } else if (token.length >= 3) {
+                            prefix = token.slice(0, token.length - 1);
+                        } else {
+                            prefix = token;
+                        }
+                        tokenConditions.push('(fname LIKE ? OR lname LIKE ?)');
                         params.push(`${prefix}%`, `${prefix}%`);
                     }
+                    
+                    tokenGroups.push(`(${tokenConditions.join(' OR ')})`);
                 }
                 
-                sql += conditions.join(' OR ') + ' ORDER BY lname ASC, fname ASC LIMIT 100';
+                sql += tokenGroups.join(' AND ') + ' ORDER BY lname ASC, fname ASC LIMIT 100';
                 customers = await db.prepare(sql).all(...params);
             } else {
                 customers = [];

@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
             queryStr += ' WHERE ' + conditions.join(' AND ');
         }
 
-        queryStr += ' ORDER BY ("order" + 0) ASC';
+        queryStr += ' ORDER BY value1 ASC';
 
         const values = await db.prepare(queryStr).all(...params);
         return sendSuccess(res, values);
