@@ -69,6 +69,16 @@ router.get('/:id', async (req, res) => {
             return sendError(res, 'Customer not found', 404);
         }
         
+        // Retrieve count of related records
+        const jobCount = await db.prepare('SELECT COUNT(*) as count FROM jobs WHERE customer_id = ?').get(id);
+        const creditCount = await db.prepare('SELECT COUNT(*) as count FROM goldcredits WHERE customer_id = ?').get(id);
+        const customSheetCount = await db.prepare('SELECT COUNT(*) as count FROM custom_sheets WHERE customer_id = ?').get(id);
+        
+        // Attach counts to the customer details response
+        customer.job_count = jobCount ? jobCount.count : 0;
+        customer.credit_count = creditCount ? creditCount.count : 0;
+        customer.custom_sheet_count = customSheetCount ? customSheetCount.count : 0;
+        
         return sendSuccess(res, customer);
     } catch (err) {
         return sendError(res, err.message);
