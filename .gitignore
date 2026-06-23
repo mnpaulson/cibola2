@@ -5,3 +5,4 @@ database.sqlite
 # Ignore public folder contents (saved images)
 public/*
 !public/.gitkeep
+.env

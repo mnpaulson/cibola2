@@ -33,6 +33,7 @@ const jobRoutes = require('./routes/jobs');
 const valueRoutes = require('./routes/values');
 const creditRoutes = require('./routes/credits');
 const customSheetRoutes = require('./routes/customSheets');
+const feedbackRoutes = require('./routes/feedback');
 
 // Mount routes
 app.use('/customers', customerRoutes);
@@ -41,6 +42,7 @@ app.use('/jobs', jobRoutes);
 app.use('/values', valueRoutes);
 app.use('/goldcredits', creditRoutes);
 app.use('/customsheets', customSheetRoutes);
+app.use('/feedback', feedbackRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
