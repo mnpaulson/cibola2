@@ -172,7 +172,6 @@ if (connectionType === 'mysql') {
                 note TEXT,
                 used INTEGER NOT NULL DEFAULT 0,
                 credit_type TEXT NOT NULL DEFAULT 'credit',
-                credit_value REAL NOT NULL DEFAULT 0,
                 created_at DATETIME,
                 updated_at DATETIME,
                 FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
@@ -332,13 +331,6 @@ if (connectionType === 'mysql') {
     }
 
     initSchema();
-
-    try {
-        rawDb.prepare('ALTER TABLE goldcredits ADD COLUMN credit_value REAL NOT NULL DEFAULT 0').run();
-        console.log('[Migration] Added credit_value column to goldcredits');
-    } catch (err) {
-        // Already exists
-    }
 
     try {
         rawDb.prepare('ALTER TABLE "values" ADD COLUMN markup TEXT').run();
