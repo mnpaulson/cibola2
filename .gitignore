@@ -6,3 +6,4 @@ database.sqlite
 public/*
 !public/.gitkeep
 .env
+.env

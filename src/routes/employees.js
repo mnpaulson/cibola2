@@ -3,59 +3,35 @@ const router = express.Router();
 const { db, getTimestamp } = require('../db');
 const { sendSuccess, sendError } = require('../utils/response');
 
-// 1. GET /employees (List all or active only)
+// 1. GET /employees (List all or active only, with optional exclusion of Nobody/Unassigned)
 router.get('/', async (req, res) => {
     try {
-        const { active } = req.query;
-        let employees;
+        const { active, excludeNobody } = req.query;
+        let query = 'SELECT * FROM employees';
+        const conditions = [];
 
         if (active === 'true') {
-            employees = await db.prepare('SELECT * FROM employees WHERE active = 1').all();
-        } else {
-            employees = await db.prepare('SELECT * FROM employees').all();
+            conditions.push('active = 1');
+        }
+        if (excludeNobody === 'true') {
+            conditions.push("id != 1 AND name != 'Nobody' AND name != 'Unassigned'");
         }
 
+        if (conditions.length > 0) {
+            query += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        const employees = await db.prepare(query).all();
         return sendSuccess(res, employees);
     } catch (err) {
         return sendError(res, err.message);
     }
 });
 
-// 2. GET /employees/outstanding (List active employees with outstanding jobs)
-router.get('/outstanding', async (req, res) => {
+// 2. GET /employees/assignable (List active employees excluding system default / 'Nobody')
+router.get('/assignable', async (req, res) => {
     try {
-        const { sort } = req.query;
-        const employees = await db.prepare('SELECT id, name FROM employees WHERE active = 1').all();
-
-        // Build sorting clause based on "sort" parameter
-        // Default (jobs): ordered by due_date ASC
-        // Stats: ordered by vital_date ASC, due_date DESC
-        const orderByClause = sort === 'vital' 
-            ? 'ORDER BY vital_date ASC, due_date DESC' 
-            : 'ORDER BY due_date ASC';
-
-        for (const emp of employees) {
-            const jobs = await db.prepare(`
-                SELECT id, estimate, due_date, completed_at, employee_id, customer_id, vital_date
-                FROM jobs
-                WHERE employee_id = ? AND completed_at IS NULL
-                ${orderByClause}
-            `).all(emp.id);
-
-            const nameConcat = db.isMySQL ? "CONCAT(fname, ' ', lname)" : "(fname || ' ' || lname)";
-
-            for (const job of jobs) {
-                const customer = await db.prepare(`
-                    SELECT id, ${nameConcat} as name
-                    FROM customers
-                    WHERE id = ?
-                `).get(job.customer_id);
-                job.customer = customer || null;
-            }
-
-            emp.jobs = jobs;
-        }
-
+        const employees = await db.prepare("SELECT * FROM employees WHERE active = 1 AND id != 1 AND name != 'Nobody' AND name != 'Unassigned'").all();
         return sendSuccess(res, employees);
     } catch (err) {
         return sendError(res, err.message);
