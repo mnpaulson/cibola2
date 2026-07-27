@@ -22,7 +22,7 @@ async function getCustomSheetWithDetails(sheetId) {
         });
     }
     sheet.estimates = estimates;
-    sheet.custom_images = await db.prepare('SELECT * FROM custom_images WHERE custom_sheet_id = ?').all(sheetId);
+    sheet.custom_images = await db.prepare('SELECT id, custom_sheet_id, note, image, created_at, updated_at FROM images WHERE custom_sheet_id = ?').all(sheetId);
     return sheet;
 }
 
@@ -278,11 +278,11 @@ router.post('/', async (req, res) => {
 
             // Save uploaded custom images
             if (Array.isArray(custom_images) && custom_images.length > 0) {
-                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM custom_images').get();
+                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM images').get();
                 let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
                 const insertImage = db.prepare(`
-                    INSERT INTO custom_images (custom_sheet_id, note, image, created_at, updated_at)
+                    INSERT INTO images (custom_sheet_id, note, image, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?)
                 `);
 
@@ -447,16 +447,16 @@ router.put('/:id', async (req, res) => {
 
             // Save/Update custom images
             if (Array.isArray(custom_images) && custom_images.length > 0) {
-                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM custom_images').get();
+                const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM images').get();
                 let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
                 const insertImage = db.prepare(`
-                    INSERT INTO custom_images (custom_sheet_id, note, image, created_at, updated_at)
+                    INSERT INTO images (custom_sheet_id, note, image, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?)
                 `);
 
                 const updateImageNote = db.prepare(`
-                    UPDATE custom_images
+                    UPDATE images
                     SET note = ?, updated_at = ?
                     WHERE id = ?
                 `);
@@ -494,14 +494,14 @@ router.delete('/:id', async (req, res) => {
         }
 
         // Fetch associated images and delete their physical files
-        const images = await db.prepare('SELECT image FROM custom_images WHERE custom_sheet_id = ?').all(id);
+        const images = await db.prepare('SELECT image FROM images WHERE custom_sheet_id = ?').all(id);
         for (const img of images) {
             deleteImageFile(img.image);
         }
 
         const transaction = db.transaction(async () => {
             // Delete custom images from DB
-            await db.prepare('DELETE FROM custom_images WHERE custom_sheet_id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE custom_sheet_id = ?').run(id);
             // Find estimates
             const estimates = await db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(id);
             for (const est of estimates) {
@@ -525,11 +525,11 @@ router.delete('/:id', async (req, res) => {
 router.delete('/images/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const image = await db.prepare('SELECT * FROM custom_images WHERE id = ?').get(id);
+        const image = await db.prepare('SELECT * FROM images WHERE id = ? AND custom_sheet_id IS NOT NULL').get(id);
         
         if (image) {
             deleteImageFile(image.image);
-            await db.prepare('DELETE FROM custom_images WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE id = ?').run(id);
             return sendSuccess(res, { id: parseInt(id), image: image.image });
         } else {
             return sendError(res, 'Image not found', 404);

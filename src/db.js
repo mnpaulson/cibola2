@@ -152,14 +152,18 @@ if (connectionType === 'mysql') {
                 FOREIGN KEY (employee_id) REFERENCES employees(id)
             );
 
-            CREATE TABLE IF NOT EXISTS job_images (
+            CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id INTEGER NOT NULL,
+                job_id INTEGER,
+                goldcredit_id INTEGER,
+                custom_sheet_id INTEGER,
                 note TEXT,
                 image TEXT NOT NULL,
                 created_at DATETIME,
                 updated_at DATETIME,
-                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+                FOREIGN KEY (goldcredit_id) REFERENCES goldcredits(id) ON DELETE CASCADE,
+                FOREIGN KEY (custom_sheet_id) REFERENCES custom_sheets(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS goldcredits (
@@ -191,16 +195,6 @@ if (connectionType === 'mysql') {
                 FOREIGN KEY (goldcredit_id) REFERENCES goldcredits(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS credit_images (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                goldcredit_id INTEGER NOT NULL,
-                note TEXT,
-                image TEXT NOT NULL,
-                created_at DATETIME,
-                updated_at DATETIME,
-                FOREIGN KEY (goldcredit_id) REFERENCES goldcredits(id) ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS "values" (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type_id INTEGER NOT NULL,
@@ -224,16 +218,6 @@ if (connectionType === 'mysql') {
                 created_at DATETIME,
                 updated_at DATETIME,
                 FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS custom_images (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                custom_sheet_id INTEGER NOT NULL,
-                note TEXT,
-                image TEXT NOT NULL,
-                created_at DATETIME,
-                updated_at DATETIME,
-                FOREIGN KEY (custom_sheet_id) REFERENCES custom_sheets(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS estimates (
@@ -331,6 +315,32 @@ if (connectionType === 'mysql') {
     }
 
     initSchema();
+
+    try {
+        const tableCheck = rawDb.prepare("SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name IN ('job_images', 'credit_images', 'custom_images')").get();
+        if (tableCheck && tableCheck.count > 0) {
+            console.log('[Migration] Consolidating legacy image tables into unified images table...');
+            const hasJobImages = rawDb.prepare("SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name='job_images'").get().count > 0;
+            const hasCreditImages = rawDb.prepare("SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name='credit_images'").get().count > 0;
+            const hasCustomImages = rawDb.prepare("SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name='custom_images'").get().count > 0;
+
+            if (hasJobImages) {
+                rawDb.exec(`INSERT INTO images (id, job_id, goldcredit_id, custom_sheet_id, note, image, created_at, updated_at) SELECT id, job_id, NULL, NULL, note, image, created_at, updated_at FROM job_images;`);
+                rawDb.exec(`DROP TABLE IF EXISTS job_images;`);
+            }
+            if (hasCreditImages) {
+                rawDb.exec(`INSERT INTO images (id, job_id, goldcredit_id, custom_sheet_id, note, image, created_at, updated_at) SELECT id, NULL, goldcredit_id, NULL, note, image, created_at, updated_at FROM credit_images;`);
+                rawDb.exec(`DROP TABLE IF EXISTS credit_images;`);
+            }
+            if (hasCustomImages) {
+                rawDb.exec(`INSERT INTO images (id, job_id, goldcredit_id, custom_sheet_id, note, image, created_at, updated_at) SELECT id, NULL, NULL, custom_sheet_id, note, image, created_at, updated_at FROM custom_images;`);
+                rawDb.exec(`DROP TABLE IF EXISTS custom_images;`);
+            }
+            console.log('[Migration] Legacy image tables migrated to images table.');
+        }
+    } catch (err) {
+        console.error('[Migration] Error migrating legacy image tables:', err.message);
+    }
 
     try {
         rawDb.prepare('ALTER TABLE "values" ADD COLUMN markup TEXT').run();

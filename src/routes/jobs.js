@@ -8,7 +8,7 @@ const { sendSuccess, sendPaginated, sendError } = require('../utils/response');
 async function getJobWithDetails(jobId) {
     const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
     if (job) {
-        job.job_images = await db.prepare('SELECT * FROM job_images WHERE job_id = ?').all(jobId);
+        job.job_images = await db.prepare('SELECT id, job_id, note, image, created_at, updated_at FROM images WHERE job_id = ?').all(jobId);
         job.customer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(job.customer_id) || null;
         job.employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(job.employee_id) || null;
     }
@@ -264,11 +264,11 @@ router.post('/', async (req, res) => {
 
         // Save uploaded job images
         if (Array.isArray(job_images) && job_images.length > 0) {
-            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
-                INSERT INTO job_images (job_id, note, image, created_at, updated_at)
+                INSERT INTO images (job_id, note, image, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
             `);
 
@@ -333,16 +333,16 @@ router.put('/:id', async (req, res) => {
 
         // Save/Update images
         if (Array.isArray(job_images) && job_images.length > 0) {
-            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM job_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
-                INSERT INTO job_images (job_id, note, image, created_at, updated_at)
+                INSERT INTO images (job_id, note, image, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
             `);
 
             const updateImageNote = db.prepare(`
-                UPDATE job_images
+                UPDATE images
                 SET note = ?, updated_at = ?
                 WHERE id = ?
             `);
@@ -378,14 +378,14 @@ router.delete('/:id', async (req, res) => {
         }
 
         // Fetch and delete associated job image files
-        const images = await db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(id);
+        const images = await db.prepare('SELECT image FROM images WHERE job_id = ?').all(id);
         for (const img of images) {
             deleteImageFile(img.image);
         }
 
         const transaction = db.transaction(async () => {
             // Delete job images from database
-            await db.prepare('DELETE FROM job_images WHERE job_id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE job_id = ?').run(id);
             // Delete job from database
             await db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
         });
@@ -444,11 +444,11 @@ router.post('/:id/uncomplete', async (req, res) => {
 router.delete('/images/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const image = await db.prepare('SELECT * FROM job_images WHERE id = ?').get(id);
+        const image = await db.prepare('SELECT * FROM images WHERE id = ? AND job_id IS NOT NULL').get(id);
         
         if (image) {
             deleteImageFile(image.image);
-            await db.prepare('DELETE FROM job_images WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE id = ?').run(id);
             return sendSuccess(res, { id: parseInt(id), image: image.image });
         } else {
             return sendError(res, 'Image not found', 404);

@@ -8,7 +8,7 @@ const { sendSuccess, sendPaginated, sendError } = require('../utils/response');
 async function getCreditWithDetails(creditId) {
     const credit = await db.prepare('SELECT * FROM goldcredits WHERE id = ?').get(creditId);
     if (credit) {
-        credit.credit_images = await db.prepare('SELECT * FROM credit_images WHERE goldcredit_id = ?').all(creditId);
+        credit.credit_images = await db.prepare('SELECT id, goldcredit_id, note, image, created_at, updated_at FROM images WHERE goldcredit_id = ?').all(creditId);
         credit.credit_items = await db.prepare('SELECT * FROM credit_items WHERE goldcredit_id = ?').all(creditId);
         credit.customer = await db.prepare('SELECT * FROM customers WHERE id = ?').get(credit.customer_id) || null;
         credit.employee = await db.prepare('SELECT * FROM employees WHERE id = ?').get(credit.employee_id) || null;
@@ -230,11 +230,11 @@ router.post('/', async (req, res) => {
 
         // Save nested images
         if (Array.isArray(credit_images) && credit_images.length > 0) {
-            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM credit_images').get();
+            const maxImageRecord = await db.prepare('SELECT MAX(id) as maxId FROM images').get();
             let nextImageId = (maxImageRecord && maxImageRecord.maxId ? maxImageRecord.maxId : 0) + 1;
 
             const insertImage = db.prepare(`
-                INSERT INTO credit_images (goldcredit_id, note, image, created_at, updated_at)
+                INSERT INTO images (goldcredit_id, note, image, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
             `);
 
@@ -303,14 +303,14 @@ router.delete('/:id', async (req, res) => {
         }
 
         // Fetch associated images and delete their physical files
-        const images = await db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(id);
+        const images = await db.prepare('SELECT image FROM images WHERE goldcredit_id = ?').all(id);
         for (const img of images) {
             deleteImageFile(img.image);
         }
 
         const transaction = db.transaction(async () => {
             // Delete credit images from DB
-            await db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE goldcredit_id = ?').run(id);
             // Delete credit items from DB
             await db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(id);
             // Delete credit record
@@ -328,11 +328,11 @@ router.delete('/:id', async (req, res) => {
 router.delete('/images/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const image = await db.prepare('SELECT * FROM credit_images WHERE id = ?').get(id);
+        const image = await db.prepare('SELECT * FROM images WHERE id = ? AND goldcredit_id IS NOT NULL').get(id);
 
         if (image) {
             deleteImageFile(image.image);
-            await db.prepare('DELETE FROM credit_images WHERE id = ?').run(id);
+            await db.prepare('DELETE FROM images WHERE id = ?').run(id);
             return sendSuccess(res, { id: parseInt(id), image: image.image });
         } else {
             return sendError(res, 'Image not found', 404);

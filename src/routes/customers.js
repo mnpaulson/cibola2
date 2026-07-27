@@ -182,12 +182,12 @@ router.delete('/:id', async (req, res) => {
             // Find associated jobs to clean up their image files
             const jobs = await db.prepare('SELECT id FROM jobs WHERE customer_id = ?').all(id);
             for (const job of jobs) {
-                const images = await db.prepare('SELECT image FROM job_images WHERE job_id = ?').all(job.id);
+                const images = await db.prepare('SELECT image FROM images WHERE job_id = ?').all(job.id);
                 for (const img of images) {
                     deleteImageFile(img.image);
                 }
                 // Delete job images from database
-                await db.prepare('DELETE FROM job_images WHERE job_id = ?').run(job.id);
+                await db.prepare('DELETE FROM images WHERE job_id = ?').run(job.id);
             }
 
             // Delete jobs (ON DELETE CASCADE is defined but this double checks and removes them cleanly)
@@ -197,11 +197,11 @@ router.delete('/:id', async (req, res) => {
             const sheets = await db.prepare('SELECT id FROM custom_sheets WHERE customer_id = ?').all(id);
             for (const sheet of sheets) {
                 // Fetch associated images and delete their physical files
-                const images = await db.prepare('SELECT image FROM custom_images WHERE custom_sheet_id = ?').all(sheet.id);
+                const images = await db.prepare('SELECT image FROM images WHERE custom_sheet_id = ?').all(sheet.id);
                 for (const img of images) {
                     deleteImageFile(img.image);
                 }
-                await db.prepare('DELETE FROM custom_images WHERE custom_sheet_id = ?').run(sheet.id);
+                await db.prepare('DELETE FROM images WHERE custom_sheet_id = ?').run(sheet.id);
 
                 const estimates = await db.prepare('SELECT id FROM estimates WHERE custom_sheet_id = ?').all(sheet.id);
                 for (const est of estimates) {
@@ -214,11 +214,11 @@ router.delete('/:id', async (req, res) => {
             // Find associated goldcredits to clean up items and images
             const credits = await db.prepare('SELECT id FROM goldcredits WHERE customer_id = ?').all(id);
             for (const credit of credits) {
-                const creditImages = await db.prepare('SELECT image FROM credit_images WHERE goldcredit_id = ?').all(credit.id);
+                const creditImages = await db.prepare('SELECT image FROM images WHERE goldcredit_id = ?').all(credit.id);
                 for (const img of creditImages) {
                     deleteImageFile(img.image);
                 }
-                await db.prepare('DELETE FROM credit_images WHERE goldcredit_id = ?').run(credit.id);
+                await db.prepare('DELETE FROM images WHERE goldcredit_id = ?').run(credit.id);
                 await db.prepare('DELETE FROM credit_items WHERE goldcredit_id = ?').run(credit.id);
             }
             await db.prepare('DELETE FROM goldcredits WHERE customer_id = ?').run(id);
