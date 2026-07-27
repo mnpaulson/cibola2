@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch-path=src src/index.js",
-    "migrate:mysql-to-sqlite": "node scripts/migrate-mysql-to-sqlite.js"
+    "migrate:mysql-to-sqlite": "node scripts/migrate-mysql-to-sqlite.js",
+    "backup": "node scripts/backup-sqlite.js",
+    "setup-backup": "scripts\\setup-backup-task.bat"
   },
   "keywords": [],
   "author": "",
