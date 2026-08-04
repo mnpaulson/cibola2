@@ -246,6 +246,22 @@ if (connectionType === 'mysql') {
                 updated_at DATETIME,
                 FOREIGN KEY (estimate_id) REFERENCES estimates(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS customer_duplicates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id_1 INTEGER NOT NULL,
+                customer_id_2 INTEGER NOT NULL,
+                similarity_score REAL NOT NULL,
+                match_reasons TEXT,
+                status TEXT NOT NULL DEFAULT 'unreviewed',
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY (customer_id_1) REFERENCES customers(id) ON DELETE CASCADE,
+                FOREIGN KEY (customer_id_2) REFERENCES customers(id) ON DELETE CASCADE,
+                UNIQUE (customer_id_1, customer_id_2)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cust_dup_pair ON customer_duplicates(customer_id_1, customer_id_2);
+            CREATE INDEX IF NOT EXISTS idx_cust_dup_status ON customer_duplicates(status);
         `);
     }
 
