@@ -1,10 +1,22 @@
 node_modules/
 .env
-database.sqlite
+.env.*
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Backups
+backups/*
+!backups/.gitkeep
+
+# Temp / scratch directories
+scratch/
 
 # Ignore public folder contents (saved images)
 public/*
 !public/.gitkeep
-.env
-.env
-.env
