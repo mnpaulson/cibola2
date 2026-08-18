@@ -202,6 +202,7 @@ if (connectionType === 'mysql') {
                 value1 TEXT,
                 value2 TEXT,
                 value3 TEXT,
+                value4 TEXT,
                 "order" TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
                 markup TEXT,
@@ -368,6 +369,13 @@ if (connectionType === 'mysql') {
     try {
         rawDb.prepare('ALTER TABLE "values" ADD COLUMN "default" TEXT').run();
         console.log('[Migration] Added default column to values');
+    } catch (err) {
+        // Already exists
+    }
+
+    try {
+        rawDb.prepare('ALTER TABLE "values" ADD COLUMN value4 TEXT').run();
+        console.log('[Migration] Added value4 column to values');
     } catch (err) {
         // Already exists
     }

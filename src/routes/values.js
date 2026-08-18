@@ -91,7 +91,7 @@ router.get('/:id', async (req, res) => {
 // 5. POST / (Create lookup configuration)
 router.post('/', async (req, res) => {
     try {
-        const { name, type_id, value1, value2, value3, order, active, markup, default: defaultValue } = req.body;
+        const { name, type_id, value1, value2, value3, value4, order, active, markup, default: defaultValue } = req.body;
 
         if (!name) {
             return sendError(res, 'Value name is required', 400);
@@ -100,8 +100,8 @@ router.post('/', async (req, res) => {
         const timestamp = getTimestamp();
 
         const insert = db.prepare(`
-            INSERT INTO "values" (name, type_id, value1, value2, value3, "order", active, created_at, updated_at, markup, "default")
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO "values" (name, type_id, value1, value2, value3, value4, "order", active, created_at, updated_at, markup, "default")
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const result = await insert.run(
             name,
@@ -109,6 +109,7 @@ router.post('/', async (req, res) => {
             value1 || null,
             value2 || null,
             value3 || null,
+            value4 || null,
             order || null,
             active === false || active === 0 ? 0 : 1,
             timestamp,
@@ -128,7 +129,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, value1, value2, value3, order, active, markup, default: defaultValue } = req.body;
+        const { name, value1, value2, value3, value4, order, active, markup, default: defaultValue } = req.body;
 
         if (!name) {
             return sendError(res, 'Value name is required', 400);
@@ -138,7 +139,7 @@ router.put('/:id', async (req, res) => {
 
         const update = db.prepare(`
             UPDATE "values"
-            SET name = ?, value1 = ?, value2 = ?, value3 = ?, "order" = ?, active = ?, updated_at = ?, markup = ?, "default" = ?
+            SET name = ?, value1 = ?, value2 = ?, value3 = ?, value4 = ?, "order" = ?, active = ?, updated_at = ?, markup = ?, "default" = ?
             WHERE id = ?
         `);
         const result = await update.run(
@@ -146,6 +147,7 @@ router.put('/:id', async (req, res) => {
             value1 || null,
             value2 || null,
             value3 || null,
+            value4 || null,
             order || null,
             active === false || active === 0 ? 0 : 1,
             timestamp,
